@@ -1,5 +1,6 @@
 const std = @import("std");
 const zlua = @import("zlua");
+const identity = @import("../identity.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -14,7 +15,6 @@ pub const Config = struct {
 pub const Grant = struct {
     name: []const u8,
     root: std.Io.Dir,
-    io: std.Io,
     writable: bool,
     eval: bool,
     max_bytes: usize,
@@ -23,111 +23,82 @@ pub const Grant = struct {
         return .{
             .name = try allocator.dupe(u8, config.name),
             .root = try std.Io.Dir.cwd().openDir(io, config.root, .{ .follow_symlinks = false }),
-            .io = io,
             .writable = config.writable,
             .eval = config.eval,
             .max_bytes = config.max_bytes,
         };
     }
 
-    pub fn deinit(self: *Grant) void {
-        self.root.close(self.io);
+    pub fn deinit(self: *Grant, io: std.Io) void {
+        self.root.close(io);
     }
 
-    pub fn push(self: *const Grant, lua: *zlua.Lua) void {
-        const Callbacks = struct {
-            fn grant(state: *zlua.Lua) *const Grant {
-                return @ptrCast(@alignCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?));
-            }
-            fn readValue(state: *zlua.Lua) !i32 {
-                const value = grant(state);
-                const data = try value.read(state.allocator(), state.checkString(1));
-                defer state.allocator().free(data);
-                _ = state.pushString(data);
-                return 1;
-            }
-            fn writeValue(state: *zlua.Lua) !i32 {
-                try grant(state).write(state.checkString(1), state.checkString(2));
-                return 0;
-            }
-        };
+    pub fn push(self: *const Grant, lua: *zlua.Lua, caller: *identity.Caller) void {
         lua.createTable(0, if (self.writable) 2 else 1);
         lua.pushLightUserdata(self);
-        lua.pushClosure(zlua.wrap(Callbacks.readValue), 1);
+        lua.pushLightUserdata(caller);
+        lua.pushClosure(zlua.wrap(read), 2);
         lua.setField(-2, "read");
         if (self.writable) {
             lua.pushLightUserdata(self);
-            lua.pushClosure(zlua.wrap(Callbacks.writeValue), 1);
+            lua.pushLightUserdata(caller);
+            lua.pushClosure(zlua.wrap(write), 2);
             lua.setField(-2, "write");
         }
     }
 
-    fn read(self: *const Grant, allocator: Allocator, path: []const u8) ![]u8 {
-        var parent = try self.openParent(path);
-        defer if (parent.close) parent.dir.close(self.io);
-        const file = try parent.dir.openFile(self.io, parent.name, .{
+    fn read(lua: *zlua.Lua) !i32 {
+        const self: *const Grant = @ptrCast(@alignCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?));
+        const caller: *identity.Caller = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?)));
+        if (lua.typeOf(1) != .string) return error.ExpectedBytes;
+        var parent = try self.openParent(caller.io, try lua.toString(1));
+        defer if (parent.close) parent.dir.close(caller.io);
+        const file = try parent.dir.openFile(caller.io, parent.name, .{
             .allow_directory = false,
             .follow_symlinks = false,
             .resolve_beneath = true,
         });
-        defer file.close(self.io);
-        const size = (try file.stat(self.io)).size;
-        if (size > self.max_bytes) return error.FileTooLarge;
-        const data = try allocator.alloc(u8, @intCast(size));
-        errdefer allocator.free(data);
-        const read_count = try file.readPositionalAll(self.io, data, 0);
-        if (read_count != data.len) return error.UnexpectedEndOfFile;
-        return data;
+        defer file.close(caller.io);
+        var buffer: [8192]u8 = undefined;
+        var reader = file.readerStreaming(caller.io, &buffer);
+        const data = try reader.interface.allocRemaining(lua.allocator(), .limited(self.max_bytes));
+        defer lua.allocator().free(data);
+        _ = lua.pushString(data);
+        return 1;
     }
 
-    fn write(self: *const Grant, path: []const u8, data: []const u8) !void {
-        if (!self.writable) return error.ReadOnly;
+    fn write(lua: *zlua.Lua) !i32 {
+        const self: *const Grant = @ptrCast(@alignCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?));
+        const caller: *identity.Caller = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?)));
+        if (lua.typeOf(1) != .string or lua.typeOf(2) != .string) return error.ExpectedBytes;
+        const data = try lua.toString(2);
         if (data.len > self.max_bytes) return error.FileTooLarge;
-        var parent = try self.openParent(path);
-        defer if (parent.close) parent.dir.close(self.io);
-        var random: [16]u8 = undefined;
-        self.io.random(&random);
-        var temp: [36]u8 = ".pa-".* ++ ([_]u8{0} ** 32);
-        const hex = "0123456789abcdef";
-        for (random, 0..) |byte, index| {
-            temp[4 + index * 2] = hex[byte >> 4];
-            temp[5 + index * 2] = hex[byte & 15];
-        }
-        const file = try parent.dir.createFile(self.io, &temp, .{ .exclusive = true });
-        var present = true;
-        var open = true;
-        defer if (present) parent.dir.deleteFile(self.io, &temp) catch {};
-        defer if (open) file.close(self.io);
-        try file.writeStreamingAll(self.io, data);
-        try file.sync(self.io);
-        file.close(self.io);
-        open = false;
-        try parent.dir.rename(&temp, parent.dir, parent.name, self.io);
-        present = false;
+        var parent = try self.openParent(caller.io, try lua.toString(1));
+        defer if (parent.close) parent.dir.close(caller.io);
+        var atomic = try parent.dir.createFileAtomic(caller.io, parent.name, .{ .replace = true });
+        defer atomic.deinit(caller.io);
+        try atomic.file.writeStreamingAll(caller.io, data);
+        try atomic.file.sync(caller.io);
+        try atomic.replace(caller.io);
+        return 0;
     }
 
-    fn segments(path: []const u8) !std.mem.SplitIterator(u8, .scalar) {
+    fn openParent(self: *const Grant, io: std.Io, path: []const u8) !struct { dir: std.Io.Dir, close: bool, name: []const u8 } {
         if (path.len == 0 or path[0] == '/' or std.mem.indexOfScalar(u8, path, '\\') != null) return error.InvalidPath;
-        var validation = std.mem.splitScalar(u8, path, '/');
-        while (validation.next()) |segment| {
-            if (segment.len == 0 or std.mem.eql(u8, segment, ".") or std.mem.eql(u8, segment, "..")) return error.InvalidPath;
-        }
-        return std.mem.splitScalar(u8, path, '/');
-    }
-
-    fn openParent(self: *const Grant, path: []const u8) !struct { dir: std.Io.Dir, close: bool, name: []const u8 } {
-        var parts = try segments(path);
+        var parts = std.mem.splitScalar(u8, path, '/');
         var current = self.root;
         var owned = false;
-        errdefer if (owned) current.close(self.io);
+        errdefer if (owned) current.close(io);
         var name = parts.next().?;
         while (parts.next()) |next| {
-            const child = try current.openDir(self.io, name, .{ .follow_symlinks = false });
-            if (owned) current.close(self.io);
+            if (name.len == 0 or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return error.InvalidPath;
+            const child = try current.openDir(io, name, .{ .follow_symlinks = false });
+            if (owned) current.close(io);
             current = child;
             owned = true;
             name = next;
         }
+        if (name.len == 0 or std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) return error.InvalidPath;
         return .{ .dir = current, .close = owned, .name = name };
     }
 };

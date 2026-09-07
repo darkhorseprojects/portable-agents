@@ -26,7 +26,7 @@ pub const Agent = struct {
     source: []const u8,
     entry: []const u8,
     key: identity.KeyPair,
-    route: []const u8,
+    self_handle: identity.Handle,
     host: host.Host,
     reload_ns: u64,
     next_check: std.Io.Timestamp,
@@ -42,6 +42,7 @@ pub const Agent = struct {
         const source = try arena.allocator().dupe(u8, config.source);
         const entry = try arena.allocator().dupe(u8, config.entry);
         const route = try arena.allocator().dupe(u8, config.route);
+        const self_handle = try identity.issue(&config.key, route, io);
         var host_value = try host.Host.init(allocator, io, config.host);
         errdefer host_value.deinit();
         var snapshot = try package.scan(allocator, io, source);
@@ -55,7 +56,7 @@ pub const Agent = struct {
             .source = source,
             .entry = entry,
             .key = config.key,
-            .route = route,
+            .self_handle = self_handle,
             .host = host_value,
             .reload_ns = config.reload_ns,
             .next_check = now.addDuration(.{ .nanoseconds = config.reload_ns }),
@@ -99,34 +100,31 @@ pub const Agent = struct {
         errdefer allocator.destroy(invocation);
         invocation.* = .{
             .agent = self,
-            .image = image,
             .quota = .{ .child = allocator, .limit = self.lua_bytes },
             .lua = undefined,
-            .caller = .{
-                .allocator = allocator,
-                .io = self.io,
-                .key = &self.key,
-                .router = self.host.router,
-                .parent = call,
-            },
+            .caller = undefined,
             .execution = undefined,
             .entry_ref = zlua.no_ref,
-            .started = false,
-            .complete = false,
-            .frame_bytes = self.frame_bytes,
+            .state = .initial,
+            .canceled = .init(false),
         };
-        const self_handle = try identity.issue(&self.key, self.route, self.io);
+        invocation.caller = .{
+            .allocator = allocator,
+            .io = self.io,
+            .key = &self.key,
+            .router = self.host.router,
+            .parent = call,
+            .canceled = &invocation.canceled,
+        };
         invocation.execution = .{
             .image = image,
             .host = &self.host,
             .caller = &invocation.caller,
-            .allocator = allocator,
-            .io = self.io,
+            .self = &self.self_handle,
             .scope = .trusted,
             .steps_left = self.lua_steps,
             .lua_bytes = self.lua_bytes,
             .lua_steps = self.lua_steps,
-            .self = self_handle,
         };
         invocation.lua = try lua.createTrusted(&invocation.quota, &invocation.execution);
         errdefer invocation.lua.deinit();
@@ -145,32 +143,37 @@ pub const Agent = struct {
 
 pub const Invocation = struct {
     agent: *Agent,
-    image: *package.Image,
     quota: lua.Quota,
     lua: *zlua.Lua,
     caller: identity.Caller,
     execution: lua.Exec,
     entry_ref: i32,
-    started: bool,
-    complete: bool,
-    frame_bytes: usize,
+    state: enum { initial, suspended, done },
+    canceled: std.atomic.Value(bool),
 
     pub fn @"resume"(self: *Invocation) !Frame {
-        if (self.complete) return error.InvocationComplete;
+        if (self.state == .done) return error.InvocationComplete;
+        errdefer self.state = .done;
+        self.caller.io.checkCancel() catch |err| {
+            self.caller.observe(err);
+            return err;
+        };
         _ = self.lua.getIndexRaw(zlua.registry_index, self.entry_ref);
         const thread = try self.lua.toThread(-1);
         self.lua.pop(1);
-        if (self.started) thread.setTop(0);
+        if (self.state == .suspended) thread.setTop(0);
         var results: i32 = 0;
-        const status = thread.resumeThread(null, if (self.started) 0 else 1, &results) catch return lua.luaError(thread);
-        self.started = true;
+        const status = thread.resumeThread(null, if (self.state == .initial) 1 else 0, &results) catch return lua.luaError(thread);
         if (results != 1) return error.ExpectedOneFrame;
         const value = try lua.bytes(thread, -1);
-        if (value.len > self.frame_bytes) return error.FrameTooLarge;
+        if (value.len > self.agent.frame_bytes) return error.FrameTooLarge;
         return switch (status) {
-            .yield => .{ .yielded = value },
+            .yield => blk: {
+                self.state = .suspended;
+                break :blk .{ .yielded = value };
+            },
             .ok => blk: {
-                self.complete = true;
+                self.state = .done;
                 break :blk .{ .returned = value };
             },
         };
@@ -179,7 +182,7 @@ pub const Invocation = struct {
     pub fn destroy(self: *Invocation, allocator: Allocator) void {
         self.lua.unref(zlua.registry_index, self.entry_ref);
         self.lua.deinit();
-        self.image.release();
+        self.execution.image.release();
         allocator.destroy(self);
     }
 };

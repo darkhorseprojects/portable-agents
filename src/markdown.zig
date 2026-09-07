@@ -1,17 +1,13 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
-const List = std.ArrayList(u8);
-
-const Line = struct {
-    text: []const u8,
-    next: usize,
-};
+const Writer = std.Io.Writer;
 
 pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
-    var out: List = .empty;
-    errdefer out.deinit(allocator);
-    try out.appendSlice(allocator,
+    var output = Writer.Allocating.init(allocator);
+    errdefer output.deinit();
+    const out = &output.writer;
+    try out.writeAll(
         \\local function section(parent,name)
         \\ local value=parent[name]
         \\ if value==nil then value={} parent[name]=value end
@@ -26,29 +22,32 @@ pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
     var active = [_]bool{false} ** 6;
     var pos: usize = 0;
     while (pos < source.len) {
-        const line = lineAt(source, pos);
-        if (trim(line.text).len == 0) {
-            pos = line.next;
-        } else if (fenceStart(line.text) != null) {
-            try emitFence(&out, allocator, source, &pos);
-        } else if (heading(line.text) != null) {
-            try emitHeading(&out, allocator, line.text, &active);
-            pos = line.next;
-        } else if (listItem(line.text) != null) {
-            try emitList(&out, allocator, source, &pos);
+        var next = pos;
+        const line = lineAt(source, &next);
+        if (trim(line).len == 0) {
+            pos = next;
+        } else if (fenceStart(line) != null) {
+            try emitFence(out, source, &pos);
+        } else if (heading(line)) |item| {
+            try emitHeading(out, item.level, item.text, &active);
+            pos = next;
+        } else if (listItem(line) != null) {
+            try emitList(out, source, &pos);
         } else if (tableStart(source, pos)) {
-            try emitTable(&out, allocator, source, &pos);
+            try emitTable(out, source, &pos);
         } else {
-            try emitText(&out, allocator, source, &pos);
+            try emitText(out, source, &pos);
         }
     }
-    try out.appendSlice(allocator, "return root\n");
-    return out.toOwnedSlice(allocator);
+    try out.writeAll("return root\n");
+    return output.toOwnedSlice();
 }
 
-fn lineAt(source: []const u8, pos: usize) Line {
-    const end = std.mem.indexOfScalarPos(u8, source, pos, '\n') orelse source.len;
-    return .{ .text = source[pos..end], .next = if (end < source.len) end + 1 else end };
+fn lineAt(source: []const u8, pos: *usize) []const u8 {
+    const start = pos.*;
+    const end = std.mem.indexOfScalarPos(u8, source, start, '\n') orelse source.len;
+    pos.* = if (end < source.len) end + 1 else end;
+    return source[start..end];
 }
 
 fn trim(line: []const u8) []const u8 {
@@ -61,44 +60,37 @@ fn heading(line: []const u8) ?struct { level: usize, text: []const u8 } {
     while (level < value.len and level < 6 and value[level] == '#') level += 1;
     if (level == 0 or level == value.len or value[level] != ' ') return null;
     const text = trim(value[level + 1 ..]);
-    if (text.len == 0) return null;
-    return .{ .level = level, .text = text };
+    return if (text.len == 0) null else .{ .level = level, .text = text };
 }
 
 fn listItem(line: []const u8) ?[]const u8 {
     const value = trim(line);
-    if (!std.mem.startsWith(u8, value, "- ")) return null;
-    return trim(value[2..]);
+    return if (std.mem.startsWith(u8, value, "- ")) trim(value[2..]) else null;
 }
 
 fn tableStart(source: []const u8, pos: usize) bool {
-    const header = trim(lineAt(source, pos).text);
-    if (header.len < 2 or header[0] != '|' or header[header.len - 1] != '|') return false;
-    const first = lineAt(source, pos);
-    if (first.next == source.len) return false;
-    const separator = trim(lineAt(source, first.next).text);
+    var next = pos;
+    const header = trim(lineAt(source, &next));
+    if (header.len < 2 or header[0] != '|' or header[header.len - 1] != '|' or next == source.len) return false;
+    const separator = trim(lineAt(source, &next));
     if (separator.len < 2 or separator[0] != '|' or separator[separator.len - 1] != '|') return false;
-    var rest = separator[1 .. separator.len - 1];
-    while (true) {
-        const split = std.mem.indexOfScalar(u8, rest, '|');
-        const cell = trim(if (split) |at| rest[0..at] else rest);
+    var cells = std.mem.splitScalar(u8, separator[1 .. separator.len - 1], '|');
+    while (cells.next()) |raw| {
+        const cell = trim(raw);
         if (cell.len < 3) return false;
         for (cell) |byte| if (byte != '-') return false;
-        if (split) |at| rest = rest[at + 1 ..] else break;
     }
     return true;
 }
 
 fn fenceStart(line: []const u8) ?[]const u8 {
     const value = trim(line);
-    if (!std.mem.startsWith(u8, value, "```")) return null;
-    return trim(value[3..]);
+    return if (std.mem.startsWith(u8, value, "```")) trim(value[3..]) else null;
 }
 
-fn emitHeading(out: *List, allocator: Allocator, line: []const u8, active: *[6]bool) !void {
-    const item = heading(line).?;
+fn emitHeading(out: *Writer, level: usize, text: []const u8, active: *[6]bool) !void {
     var parent: usize = 0;
-    var index = item.level - 1;
+    var index = level - 1;
     while (index > 0) {
         index -= 1;
         if (active[index]) {
@@ -106,140 +98,111 @@ fn emitHeading(out: *List, allocator: Allocator, line: []const u8, active: *[6]b
             break;
         }
     }
-    for (item.level - 1..6) |i| active[i] = false;
-    active[item.level - 1] = true;
-    try out.append(allocator, 's');
-    try out.append(allocator, @intCast('0' + item.level));
-    try out.appendSlice(allocator, "=section(");
-    if (parent == 0) try out.appendSlice(allocator, "root,") else {
-        try out.append(allocator, 's');
-        try out.append(allocator, @intCast('0' + parent));
-        try out.append(allocator, ',');
-    }
-    try writeLuaString(out, allocator, item.text);
-    try out.appendSlice(allocator, ") current=s");
-    try out.append(allocator, @intCast('0' + item.level));
-    try out.append(allocator, '\n');
+    for (level - 1..6) |i| active[i] = false;
+    active[level - 1] = true;
+    try out.print("s{d}=section(", .{level});
+    if (parent == 0) try out.writeAll("root") else try out.print("s{d}", .{parent});
+    try out.writeByte(',');
+    try writeLuaString(out, text);
+    try out.print(") current=s{d}\n", .{level});
 }
 
-fn emitText(out: *List, allocator: Allocator, source: []const u8, pos: *usize) !void {
-    try out.appendSlice(allocator, "add(");
+fn emitText(out: *Writer, source: []const u8, pos: *usize) !void {
+    try out.writeAll("add(");
     var first = true;
     while (pos.* < source.len) {
-        const line = lineAt(source, pos.*);
-        if (trim(line.text).len == 0 or heading(line.text) != null or listItem(line.text) != null or fenceStart(line.text) != null or tableStart(source, pos.*)) break;
-        if (!first) try out.appendSlice(allocator, "..\"\\n\"..");
-        try writeLuaString(out, allocator, line.text);
+        var next = pos.*;
+        const line = lineAt(source, &next);
+        if (trim(line).len == 0 or heading(line) != null or listItem(line) != null or fenceStart(line) != null or tableStart(source, pos.*)) break;
+        if (!first) try out.writeAll("..\"\\n\"..");
+        try writeLuaString(out, line);
         first = false;
-        pos.* = line.next;
+        pos.* = next;
     }
-    try out.appendSlice(allocator, ")\n");
+    try out.writeAll(")\n");
 }
 
-fn emitList(out: *List, allocator: Allocator, source: []const u8, pos: *usize) !void {
-    try out.appendSlice(allocator, "add({");
+fn emitList(out: *Writer, source: []const u8, pos: *usize) !void {
+    try out.writeAll("add({");
     while (pos.* < source.len) {
-        const line = lineAt(source, pos.*);
-        const item = listItem(line.text) orelse break;
-        try writeLuaString(out, allocator, item);
-        try out.append(allocator, ',');
-        pos.* = line.next;
+        var next = pos.*;
+        const item = listItem(lineAt(source, &next)) orelse break;
+        try writeLuaString(out, item);
+        try out.writeByte(',');
+        pos.* = next;
     }
-    try out.appendSlice(allocator, "})\n");
+    try out.writeAll("})\n");
 }
 
-fn emitTable(out: *List, allocator: Allocator, source: []const u8, pos: *usize) !void {
-    const header_line = lineAt(source, pos.*);
-    const header = trim(header_line.text);
-    var headers = header[1 .. header.len - 1];
+fn emitTable(out: *Writer, source: []const u8, pos: *usize) !void {
+    const header = trim(lineAt(source, pos));
+    var headers = std.mem.splitScalar(u8, header[1 .. header.len - 1], '|');
     var count: usize = 0;
-    while (true) {
-        const split = std.mem.indexOfScalar(u8, headers, '|');
-        const cell = trim(if (split) |at| headers[0..at] else headers);
-        if (cell.len == 0) return error.InvalidTable;
-        var prior = header[1 .. header.len - 1];
-        var seen: usize = 0;
-        while (seen < count) : (seen += 1) {
-            const at = std.mem.indexOfScalar(u8, prior, '|');
-            const old = trim(if (at) |i| prior[0..i] else prior);
-            if (std.mem.eql(u8, old, cell)) return error.InvalidTable;
-            prior = if (at) |i| prior[i + 1 ..] else "";
-        }
+    while (headers.next()) |raw| {
+        const name = trim(raw);
+        if (name.len == 0) return error.InvalidTable;
+        var prior = std.mem.splitScalar(u8, header[1 .. header.len - 1], '|');
+        for (0..count) |_| if (std.mem.eql(u8, trim(prior.next().?), name)) return error.InvalidTable;
         count += 1;
-        if (split) |at| headers = headers[at + 1 ..] else break;
     }
-    const separator_line = lineAt(source, header_line.next);
-    const separator = trim(separator_line.text);
-    var separators = separator[1 .. separator.len - 1];
+    const separator = trim(lineAt(source, pos));
+    var separators = std.mem.splitScalar(u8, separator[1 .. separator.len - 1], '|');
     var separator_count: usize = 0;
-    while (true) {
-        separator_count += 1;
-        const split = std.mem.indexOfScalar(u8, separators, '|');
-        if (split) |at| separators = separators[at + 1 ..] else break;
-    }
+    while (separators.next() != null) separator_count += 1;
     if (separator_count != count) return error.InvalidTable;
-    pos.* = separator_line.next;
-    try out.appendSlice(allocator, "add({");
+    try out.writeAll("add({");
     while (pos.* < source.len) {
-        const line = lineAt(source, pos.*);
-        const row = trim(line.text);
+        var next = pos.*;
+        const row = trim(lineAt(source, &next));
         if (row.len < 2 or row[0] != '|' or row[row.len - 1] != '|') break;
-        var values = row[1 .. row.len - 1];
-        var names = header[1 .. header.len - 1];
-        var column: usize = 0;
-        try out.append(allocator, '{');
-        while (true) {
-            const value_at = std.mem.indexOfScalar(u8, values, '|');
-            const name_at = std.mem.indexOfScalar(u8, names, '|');
-            if (column == count) return error.InvalidTable;
-            try out.append(allocator, '[');
-            try writeLuaString(out, allocator, trim(if (name_at) |at| names[0..at] else names));
-            try out.appendSlice(allocator, "]=");
-            try writeLuaString(out, allocator, trim(if (value_at) |at| values[0..at] else values));
-            try out.append(allocator, ',');
-            column += 1;
-            if (value_at) |at| values = values[at + 1 ..] else break;
-            names = if (name_at) |at| names[at + 1 ..] else return error.InvalidTable;
+        var names = std.mem.splitScalar(u8, header[1 .. header.len - 1], '|');
+        var values = std.mem.splitScalar(u8, row[1 .. row.len - 1], '|');
+        try out.writeByte('{');
+        var columns: usize = 0;
+        while (values.next()) |value| {
+            const name = names.next() orelse return error.InvalidTable;
+            try out.writeByte('[');
+            try writeLuaString(out, trim(name));
+            try out.writeAll("]=");
+            try writeLuaString(out, trim(value));
+            try out.writeByte(',');
+            columns += 1;
         }
-        if (column != count) return error.InvalidTable;
-        try out.appendSlice(allocator, "},");
-        pos.* = line.next;
+        if (columns != count or names.next() != null) return error.InvalidTable;
+        try out.writeAll("},");
+        pos.* = next;
     }
-    try out.appendSlice(allocator, "})\n");
+    try out.writeAll("})\n");
 }
 
-fn emitFence(out: *List, allocator: Allocator, source: []const u8, pos: *usize) !void {
-    const opening = lineAt(source, pos.*);
-    try out.appendSlice(allocator, "add({language=");
-    try writeLuaString(out, allocator, fenceStart(opening.text).?);
-    try out.appendSlice(allocator, ",text=\"\"");
-    pos.* = opening.next;
+fn emitFence(out: *Writer, source: []const u8, pos: *usize) !void {
+    try out.writeAll("add({language=");
+    try writeLuaString(out, fenceStart(lineAt(source, pos)).?);
+    try out.writeAll(",text=\"\"");
     while (pos.* < source.len) {
-        const line = lineAt(source, pos.*);
-        if (std.mem.eql(u8, trim(line.text), "```")) {
-            pos.* = line.next;
-            try out.appendSlice(allocator, "})\n");
+        const line = lineAt(source, pos);
+        if (std.mem.eql(u8, trim(line), "```")) {
+            try out.writeAll("})\n");
             return;
         }
-        try out.appendSlice(allocator, "..");
-        try writeLuaString(out, allocator, line.text);
-        try out.appendSlice(allocator, "..\"\\n\"");
-        pos.* = line.next;
+        try out.writeAll("..");
+        try writeLuaString(out, line);
+        try out.writeAll("..\"\\n\"");
     }
     return error.UnclosedFence;
 }
 
-fn writeLuaString(out: *List, allocator: Allocator, value: []const u8) !void {
+fn writeLuaString(out: *Writer, value: []const u8) !void {
     const hex = "0123456789abcdef";
-    try out.append(allocator, '"');
+    try out.writeByte('"');
     for (value) |byte| switch (byte) {
-        '"' => try out.appendSlice(allocator, "\\\""),
-        '\\' => try out.appendSlice(allocator, "\\\\"),
-        '\n' => try out.appendSlice(allocator, "\\n"),
-        '\r' => try out.appendSlice(allocator, "\\r"),
-        '\t' => try out.appendSlice(allocator, "\\t"),
-        0...8, 11...12, 14...31, 127...255 => try out.appendSlice(allocator, &.{ '\\', 'x', hex[byte >> 4], hex[byte & 15] }),
-        else => try out.append(allocator, byte),
+        '"' => try out.writeAll("\\\""),
+        '\\' => try out.writeAll("\\\\"),
+        '\n' => try out.writeAll("\\n"),
+        '\r' => try out.writeAll("\\r"),
+        '\t' => try out.writeAll("\\t"),
+        0...8, 11...12, 14...31, 127...255 => try out.writeAll(&.{ '\\', 'x', hex[byte >> 4], hex[byte & 15] }),
+        else => try out.writeByte(byte),
     };
-    try out.append(allocator, '"');
+    try out.writeByte('"');
 }

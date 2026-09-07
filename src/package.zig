@@ -95,25 +95,27 @@ pub fn compile(allocator: Allocator, snapshot: *const Snapshot, entry_name: []co
     const alloc = image.arena.allocator();
     const compiler = try zlua.Lua.init(allocator);
     defer compiler.deinit();
-    var modules: std.ArrayList(Module) = .empty;
-    for (snapshot.files) |file| {
+    const modules = try alloc.alloc(Module, snapshot.files.len);
+    var entry: ?usize = null;
+    for (snapshot.files, modules, 0..) |file, *module_value, index| {
         const extension = std.mem.lastIndexOfScalar(u8, file.name, '.').?;
         const name = try alloc.dupe(u8, file.name[0..extension]);
-        for (name) |*byte| if (byte.* == '/') {
-            byte.* = '.';
-        };
-        for (modules.items) |module_value| {
-            if (std.mem.eql(u8, module_value.name, name)) return error.DuplicateModule;
+        for (name) |*byte| {
+            if (byte.* == '/') byte.* = '.';
+        }
+        for (modules[0..index]) |prior| {
+            if (std.mem.eql(u8, prior.name, name)) return error.DuplicateModule;
         }
         const source = if (file.markdown) try markdown.translate(allocator, file.source) else file.source;
         defer if (file.markdown) allocator.free(source);
-        const bytecode = try compileChunk(alloc, compiler, source, file.name);
-        try modules.append(alloc, .{ .name = name, .bytecode = bytecode });
+        module_value.* = .{
+            .name = name,
+            .bytecode = try compileChunk(alloc, allocator, compiler, source, file.name),
+        };
+        if (std.mem.eql(u8, name, entry_name)) entry = index;
     }
-    image.modules = try modules.toOwnedSlice(alloc);
-    image.entry = for (image.modules, 0..) |module_value, index| {
-        if (std.mem.eql(u8, module_value.name, entry_name)) break index;
-    } else return error.MissingEntry;
+    image.modules = modules;
+    image.entry = entry orelse return error.MissingEntry;
     return image;
 }
 
@@ -131,20 +133,20 @@ pub fn findModule(image: *const Image, name: []const u8) ?*const Module {
     return null;
 }
 
-fn compileChunk(allocator: Allocator, lua: *zlua.Lua, source: []const u8, name: []const u8) ![]const u8 {
-    const chunk_name = try allocator.dupeZ(u8, name);
+fn compileChunk(output: Allocator, scratch: Allocator, lua: *zlua.Lua, source: []const u8, name: []const u8) ![]const u8 {
+    const chunk_name = try scratch.dupeZ(u8, name);
+    defer scratch.free(chunk_name);
     try lua.loadBuffer(source, chunk_name, .text);
-    var bytes: std.ArrayList(u8) = .empty;
-    errdefer bytes.deinit(allocator);
+    var bytes = std.Io.Writer.Allocating.init(output);
+    errdefer bytes.deinit();
     const writer = struct {
         fn write(_: *zlua.Lua, part: []const u8, data: *anyopaque) bool {
-            const context: *struct { list: *std.ArrayList(u8), allocator: Allocator } = @ptrCast(@alignCast(data));
-            context.list.appendSlice(context.allocator, part) catch return false;
+            const out: *std.Io.Writer.Allocating = @ptrCast(@alignCast(data));
+            out.writer.writeAll(part) catch return false;
             return true;
         }
     }.write;
-    var context = .{ .list = &bytes, .allocator = allocator };
-    try lua.dump(zlua.wrap(writer), &context, true);
+    try lua.dump(zlua.wrap(writer), &bytes, true);
     lua.pop(1);
-    return bytes.toOwnedSlice(allocator);
+    return bytes.toOwnedSlice();
 }
