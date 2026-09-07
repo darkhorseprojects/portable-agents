@@ -1,0 +1,13 @@
+.{
+    .name = .portable_agents,
+    .version = "0.1.0",
+    .fingerprint = 0xa86444c48a5647af,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zlua = .{
+            .url = "git+https://github.com/natecraddock/ziglua#9a520d0bbaac378d2e926c76edb584da104941dc",
+            .hash = "zlua-0.1.0-hGRpCwGVBQCZRZ2QEHLENoYjRj-nNjD500_BmMsXeqT4",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "sdk", "LICENSE", "README.md" },
+}
