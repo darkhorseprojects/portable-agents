@@ -75,7 +75,7 @@ pub fn scan(allocator: Allocator, io: std.Io, source: []const u8) !Snapshot {
     }
     var digest: [32]u8 = undefined;
     hash.final(&digest);
-    return .{ .arena = arena, .digest = digest, .files = try files.toOwnedSlice(alloc) };
+    return .{ .arena = arena, .digest = digest, .files = files.items };
 }
 
 pub fn compile(allocator: Allocator, snapshot: *const Snapshot) !*Image {
