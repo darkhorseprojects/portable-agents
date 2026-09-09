@@ -5,6 +5,8 @@ const identity = @import("identity.zig");
 const host = @import("host.zig");
 
 const Allocator = std.mem.Allocator;
+const EvalResult = anyerror![]u8;
+const EvalFuture = std.Io.Future(EvalResult);
 const HookDebug = @typeInfo(@typeInfo(zlua.CHookFn).pointer.child).@"fn".params[1].type.?;
 
 pub const Entry = struct {
@@ -66,29 +68,6 @@ pub const Quota = struct {
         const self: *Quota = @ptrCast(@alignCast(pointer));
         self.child.rawFree(memory, alignment, address);
         self.used -= memory.len;
-    }
-};
-
-const Job = struct {
-    source: []const u8,
-    input: []const u8,
-    outcome: union(enum) { pending, returned: []u8, failed: anyerror } = .pending,
-
-    fn start(self: *Job, parent: *const Context) std.Io.Cancelable!void {
-        evalOne(self, parent) catch |err| {
-            self.outcome = .{ .failed = err };
-            if (err == error.Canceled) {
-                parent.canceled.store(true, .release);
-                return error.Canceled;
-            }
-        };
-    }
-
-    fn deinit(self: *Job, allocator: Allocator) void {
-        switch (self.outcome) {
-            .returned => |output| allocator.free(output),
-            else => {},
-        }
     }
 };
 
@@ -184,43 +163,46 @@ fn eval(state: *zlua.Lua) !i32 {
     const context = getContext(state);
     const input = if (state.getTop() >= 2) try bytes(state, 2) else "";
     if (state.typeOf(1) == .string) {
-        var job = Job{ .source = try bytes(state, 1), .input = input };
-        try evalOne(&job, context);
-        defer context.quota.child.free(job.outcome.returned);
-        _ = state.pushString(job.outcome.returned);
+        const output = try evalOne(context, try bytes(state, 1), input);
+        defer context.quota.child.free(output);
+        _ = state.pushString(output);
         return 1;
     }
     if (state.typeOf(1) != .table) return error.ExpectedEvalSource;
-    const jobs = try context.quota.child.alloc(Job, state.lenRaw(1));
-    defer context.quota.child.free(jobs);
-    for (jobs) |*job| job.* = .{ .source = "", .input = input };
-    defer for (jobs) |*job| job.deinit(context.quota.child);
-    for (jobs, 1..) |*job, index| {
+    const count = state.lenRaw(1);
+    for (1..count + 1) |index| {
         _ = state.getIndex(1, @intCast(index));
-        job.source = try bytes(state, -1);
+        _ = try bytes(state, -1);
         state.pop(1);
     }
-    var group: std.Io.Group = .init;
-    defer group.cancel(context.client.io);
-    for (jobs) |*job| group.async(context.client.io, Job.start, .{ job, context });
-    group.await(context.client.io) catch |err| {
-        if (err == error.Canceled) context.canceled.store(true, .release);
-        return err;
-    };
-    for (jobs, 1..) |job, index| switch (job.outcome) {
-        .failed => |failure| state.raiseErrorStr("eval %d failed: %s", .{ index, @errorName(failure).ptr }),
-        .pending => unreachable,
-        .returned => {},
-    };
-    state.createTable(@intCast(jobs.len), 0);
-    for (jobs, 1..) |job, index| {
-        _ = state.pushString(job.outcome.returned);
+    const futures = try context.quota.child.alloc(EvalFuture, count);
+    defer context.quota.child.free(futures);
+    for (futures, 1..) |*future, index| {
+        _ = state.getIndex(1, @intCast(index));
+        const source = bytes(state, -1) catch unreachable;
+        future.* = context.client.io.async(evalOne, .{ context, source, input });
+        state.pop(1);
+    }
+    var cancel_remaining = false;
+    for (futures) |*future| {
+        const result = if (cancel_remaining) future.cancel(context.client.io) else future.await(context.client.io);
+        if (result) |_| {} else |err| {
+            if (err == error.Canceled) {
+                context.canceled.store(true, .release);
+                cancel_remaining = true;
+            }
+        }
+    }
+    defer for (futures) |future| if (future.result) |output| context.quota.child.free(output) else |_| {};
+    state.createTable(@intCast(count), 0);
+    for (futures, 1..) |future, index| {
+        _ = state.pushString(try future.result);
         state.setIndex(-2, @intCast(index));
     }
     return 1;
 }
 
-fn evalOne(job: *Job, parent: *const Context) !void {
+fn evalOne(parent: *const Context, source: []const u8, input: []const u8) EvalResult {
     var quota = Quota{ .child = parent.quota.child, .limit = parent.quota.limit };
     var context = parent.*;
     context.quota = &quota;
@@ -229,13 +211,13 @@ fn evalOne(job: *Job, parent: *const Context) !void {
     defer state.deinit();
     try resolveEntry(state);
     const environment = try publicEnvironment(state, -1);
-    try state.loadBuffer(job.source, "eval", .text);
+    try state.loadBuffer(source, "eval", .text);
     state.pushValue(environment);
     _ = try state.setUpvalue(-2, 1);
-    _ = state.pushString(job.input);
+    _ = state.pushString(input);
     state.protectedCall(.{ .args = 1, .results = 1 }) catch return luaError(state);
     if (context.canceled.load(.acquire)) return error.Canceled;
-    job.outcome = .{ .returned = try parent.quota.child.dupe(u8, try bytes(state, -1)) };
+    return parent.quota.child.dupe(u8, try bytes(state, -1));
 }
 
 fn publicEnvironment(state: *zlua.Lua, interface: i32) !i32 {
