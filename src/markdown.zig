@@ -17,6 +17,13 @@ pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
         \\local current=document
         \\local s1,s2,s3,s4,s5,s6
         \\local function add(value) current[#current+1]=value end
+        \\local function add_table(names,rows)
+        \\ for index,row in ipairs(rows) do
+        \\  local value={} for column,name in ipairs(names) do value[name]=row[column] end
+        \\  rows[index]=value
+        \\ end
+        \\ add(rows)
+        \\end
         \\
     );
     var active = [_]bool{false} ** 6;
@@ -28,10 +35,11 @@ pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
         if (trim(line).len == 0) {
             pos = next;
         } else if (fenceStart(line)) |language| {
+            pos = next;
             if (std.mem.eql(u8, language, "lua")) {
                 has_lua = true;
                 try skipFence(source, &pos);
-            } else try emitFence(out, source, &pos);
+            } else try emitFence(out, source, &pos, language);
         } else if (heading(line)) |item| {
             try emitHeading(out, item.level, item.text, &active);
             pos = next;
@@ -97,16 +105,8 @@ fn fenceStart(line: []const u8) ?[]const u8 {
 }
 
 fn emitHeading(out: *Writer, level: usize, text: []const u8, active: *[6]bool) !void {
-    var parent: usize = 0;
-    var index = level - 1;
-    while (index > 0) {
-        index -= 1;
-        if (active[index]) {
-            parent = index + 1;
-            break;
-        }
-    }
-    for (level - 1..6) |i| active[i] = false;
+    const parent = if (std.mem.lastIndexOfScalar(bool, active[0 .. level - 1], true)) |index| index + 1 else 0;
+    @memset(active[level - 1 ..], false);
     active[level - 1] = true;
     try out.print("s{d}=section(", .{level});
     if (parent == 0) try out.writeAll("document") else try out.print("s{d}", .{parent});
@@ -158,34 +158,35 @@ fn emitTable(out: *Writer, source: []const u8, pos: *usize) !void {
     var separator_count: usize = 0;
     while (separators.next() != null) separator_count += 1;
     if (separator_count != count) return error.InvalidTable;
-    try out.writeAll("add({");
+    try out.writeAll("add_table({");
+    headers = std.mem.splitScalar(u8, header[1 .. header.len - 1], '|');
+    while (headers.next()) |name| {
+        try writeLuaString(out, trim(name));
+        try out.writeByte(',');
+    }
+    try out.writeAll("},{");
     while (pos.* < source.len) {
         var next = pos.*;
         const row = trim(lineAt(source, &next));
         if (row.len < 2 or row[0] != '|' or row[row.len - 1] != '|') break;
-        var names = std.mem.splitScalar(u8, header[1 .. header.len - 1], '|');
         var values = std.mem.splitScalar(u8, row[1 .. row.len - 1], '|');
         try out.writeByte('{');
         var columns: usize = 0;
         while (values.next()) |value| {
-            const name = names.next() orelse return error.InvalidTable;
-            try out.writeByte('[');
-            try writeLuaString(out, trim(name));
-            try out.writeAll("]=");
             try writeLuaString(out, trim(value));
             try out.writeByte(',');
             columns += 1;
         }
-        if (columns != count or names.next() != null) return error.InvalidTable;
+        if (columns != count) return error.InvalidTable;
         try out.writeAll("},");
         pos.* = next;
     }
     try out.writeAll("})\n");
 }
 
-fn emitFence(out: *Writer, source: []const u8, pos: *usize) !void {
+fn emitFence(out: *Writer, source: []const u8, pos: *usize, language: []const u8) !void {
     try out.writeAll("add({language=");
-    try writeLuaString(out, fenceStart(lineAt(source, pos)).?);
+    try writeLuaString(out, language);
     try out.writeAll(",text=\"\"");
     while (pos.* < source.len) {
         const line = lineAt(source, pos);
@@ -201,7 +202,6 @@ fn emitFence(out: *Writer, source: []const u8, pos: *usize) !void {
 }
 
 fn skipFence(source: []const u8, pos: *usize) !void {
-    _ = lineAt(source, pos);
     while (pos.* < source.len) {
         if (std.mem.eql(u8, trim(lineAt(source, pos)), "```")) return;
     }
