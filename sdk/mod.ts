@@ -1,8 +1,21 @@
 export type Identity = Uint8Array;
 
 export interface Entry {
-  module: string;
-  members?: readonly string[];
+  readonly module: string;
+  readonly members?: readonly string[];
+}
+
+export interface Mount {
+  readonly name: string;
+  readonly call: (input: Uint8Array) => Promise<Uint8Array>;
+}
+
+export interface AgentOptions {
+  readonly source: string;
+  readonly identity?: Identity;
+  readonly mounts?: readonly Mount[];
+  readonly luaBytes?: number;
+  readonly luaSteps?: bigint;
 }
 
 export interface Agent {
@@ -10,19 +23,12 @@ export interface Agent {
 
   call(entry: Entry, input: Uint8Array): Promise<Uint8Array>;
 
-  close(): void;
+  close(): Promise<void>;
 }
 
-export interface Mount {
-  readonly name: string;
-}
-
-export interface AgentOptions {
-  source: string;
-  identity?: Identity;
-  mounts?: readonly Mount[];
-}
-
-export interface Backend {
-  open(options: AgentOptions): Promise<Agent>;
+export class AgentError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = "AgentError";
+  }
 }
