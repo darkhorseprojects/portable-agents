@@ -11,7 +11,7 @@ pub fn install(lua: *zlua.Lua, io: *const std.Io, canceled: *std.atomic.Value(bo
 fn create(lua: *zlua.Lua) !i32 {
     if (lua.typeOf(1) != .string) return error.ExpectedExecutable;
     const executable = try lua.toString(1);
-    if (!std.fs.path.isAbsolute(executable)) return error.ExpectedAbsolutePath;
+    if (!std.fs.path.isAbsolute(executable) or std.mem.indexOfScalar(u8, executable, 0) != null) return error.ExpectedAbsolutePath;
     lua.createTable(0, 1);
     lua.pushValue(1);
     lua.pushValue(zlua.Lua.upvalueIndex(1));
@@ -38,6 +38,7 @@ fn runValue(lua: *zlua.Lua) !i32 {
     for (argv[1..], 1..) |*argument, index| {
         _ = lua.getIndex(1, @intCast(index));
         argument.* = try lua.toString(-1);
+        if (std.mem.indexOfScalar(u8, argument.*, 0) != null) return error.ExpectedArgv;
         lua.pop(1);
     }
     const io: *const std.Io = @ptrCast(@alignCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?));

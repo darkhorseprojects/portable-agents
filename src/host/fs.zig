@@ -30,12 +30,14 @@ fn create(lua: *zlua.Lua) !i32 {
 
 fn createValue(lua: *zlua.Lua) !i32 {
     if (lua.typeOf(1) != .string) return error.ExpectedPath;
+    const path = try lua.toString(1);
+    if (std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidPath;
     const io: *const std.Io = @ptrCast(@alignCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?));
     const canceled: *std.atomic.Value(bool) = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?)));
     const root = lua.newUserdata(Root, 0);
     root.* = .{ .dir = undefined, .io = io, .canceled = canceled, .open = false };
     lua.setMetatableRegistry("pa.fs.root");
-    root.dir = try std.Io.Dir.cwd().openDir(io.*, try lua.toString(1), .{});
+    root.dir = try std.Io.Dir.cwd().openDir(io.*, path, .{});
     root.open = true;
     const root_index = lua.getTop();
     lua.createTable(0, 2);
@@ -124,5 +126,6 @@ fn openParent(root: *const Root, path: []const u8) !struct { dir: std.Io.Dir, cl
 }
 
 fn validPart(part: []const u8) bool {
-    return part.len != 0 and !std.mem.eql(u8, part, ".") and !std.mem.eql(u8, part, "..");
+    return part.len != 0 and std.mem.indexOfScalar(u8, part, 0) == null and
+        !std.mem.eql(u8, part, ".") and !std.mem.eql(u8, part, "..");
 }

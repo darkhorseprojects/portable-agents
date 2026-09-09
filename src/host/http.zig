@@ -11,6 +11,7 @@ pub fn install(lua: *zlua.Lua, client: *std.http.Client, canceled: *std.atomic.V
 fn create(lua: *zlua.Lua) !i32 {
     if (lua.typeOf(1) != .string) return error.ExpectedOrigin;
     const origin = try lua.toString(1);
+    try validateRequestBytes(origin);
     const uri = try std.Uri.parse(origin);
     if ((!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) or
         uri.host == null or uri.user != null or uri.password != null or !uri.path.isEmpty() or
@@ -44,7 +45,8 @@ fn requestValue(lua: *zlua.Lua) !i32 {
     }
     const method = std.meta.stringToEnum(std.http.Method, try lua.toString(1)) orelse return error.InvalidMethod;
     const path = try lua.toString(2);
-    if (path.len == 0 or path[0] != '/' or (path.len > 1 and path[1] == '/') or std.mem.indexOfAny(u8, path, "\\\r\n") != null) return error.InvalidPath;
+    validateRequestBytes(path) catch return error.InvalidPath;
+    if (path.len == 0 or path[0] != '/' or (path.len > 1 and path[1] == '/') or std.mem.indexOfScalar(u8, path, '\\') != null) return error.InvalidPath;
     var uri = try std.Uri.parse(try lua.toString(zlua.Lua.upvalueIndex(1)));
     const relative = try std.Uri.parse(path);
     if (relative.host != null or relative.fragment != null) return error.InvalidPath;
@@ -97,6 +99,10 @@ fn requestHeaders(lua: *zlua.Lua, index: i32) !?[]std.http.Header {
         lua.pop(1);
     }
     return headers;
+}
+
+fn validateRequestBytes(value: []const u8) !void {
+    for (value) |byte| if (byte <= ' ' or byte == 0x7f) return error.InvalidRequestBytes;
 }
 
 fn validateHeader(name: []const u8, value: []const u8) !void {
