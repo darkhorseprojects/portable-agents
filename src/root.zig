@@ -1,9 +1,8 @@
-pub const Agent = @import("agent.zig").Agent;
-pub const Config = @import("agent.zig").Config;
-pub const Invocation = @import("agent.zig").Invocation;
-pub const Frame = @import("agent.zig").Frame;
-pub const Identity = @import("identity.zig").Identity;
-pub const Handle = @import("identity.zig").Handle;
-pub const CallId = @import("identity.zig").CallId;
-pub const HostConfig = @import("host.zig").Config;
+const agent = @import("agent.zig");
+
+pub const Agent = agent.Agent;
+pub const Config = agent.Config;
+pub const Entry = agent.Entry;
+pub const Mount = agent.Mount;
+pub const Identity = agent.Identity;
 pub const check = @import("package.zig").check;

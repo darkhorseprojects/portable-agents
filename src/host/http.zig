@@ -1,77 +1,111 @@
 const std = @import("std");
 const zlua = @import("zlua");
 
-const Allocator = std.mem.Allocator;
-pub const Header = std.http.Header;
+pub fn install(lua: *zlua.Lua, client: *std.http.Client, canceled: *std.atomic.Value(bool)) void {
+    lua.pushLightUserdata(client);
+    lua.pushLightUserdata(canceled);
+    lua.pushClosure(zlua.wrap(create), 2);
+    lua.setField(-2, "http");
+}
 
-pub const Config = struct {
-    name: []const u8,
-    origin: []const u8,
-    headers: []const Header = &.{},
-    eval: bool = false,
-    max_bytes: usize = 8 * 1024 * 1024,
-};
-
-pub const Grant = struct {
-    name: []const u8,
-    origin: []const u8,
-    headers: []const Header,
-    eval: bool,
-    max_bytes: usize,
-
-    pub fn init(allocator: Allocator, config: Config) !Grant {
-        const origin = try allocator.dupe(u8, config.origin);
-        const uri = try std.Uri.parse(origin);
-        if ((!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) or uri.host == null or !uri.path.isEmpty() or uri.query != null or uri.fragment != null) return error.InvalidOrigin;
-        const headers = try allocator.alloc(Header, config.headers.len);
-        for (config.headers, headers) |source, *target| {
-            if (source.name.len == 0 or std.mem.indexOfAny(u8, source.name, ":\r\n") != null or std.mem.indexOfAny(u8, source.value, "\r\n") != null) return error.InvalidHeader;
-            target.* = .{
-                .name = try allocator.dupe(u8, source.name),
-                .value = try allocator.dupe(u8, source.value),
-            };
-        }
-        return .{
-            .name = try allocator.dupe(u8, config.name),
-            .origin = origin,
-            .headers = headers,
-            .eval = config.eval,
-            .max_bytes = config.max_bytes,
-        };
+fn create(lua: *zlua.Lua) !i32 {
+    if (lua.typeOf(1) != .string) return error.ExpectedOrigin;
+    const origin = try lua.toString(1);
+    const uri = try std.Uri.parse(origin);
+    if ((!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) or
+        uri.host == null or uri.user != null or uri.password != null or !uri.path.isEmpty() or
+        uri.query != null or uri.fragment != null)
+    {
+        return error.InvalidOrigin;
     }
+    lua.createTable(0, 1);
+    lua.pushValue(1);
+    lua.pushValue(zlua.Lua.upvalueIndex(1));
+    lua.pushValue(zlua.Lua.upvalueIndex(2));
+    lua.pushClosure(zlua.wrap(request), 3);
+    lua.setField(-2, "request");
+    return 1;
+}
 
-    pub fn push(self: *const Grant, lua: *zlua.Lua, client: *std.http.Client) void {
-        lua.createTable(0, 1);
-        lua.pushLightUserdata(self);
-        lua.pushLightUserdata(client);
-        lua.pushClosure(zlua.wrap(request), 2);
-        lua.setField(-2, "request");
-    }
+fn request(lua: *zlua.Lua) !i32 {
+    const canceled: *std.atomic.Value(bool) = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(3)).?)));
+    return requestValue(lua) catch |err| {
+        if (err == error.Canceled) canceled.store(true, .release);
+        return err;
+    };
+}
 
-    fn request(lua: *zlua.Lua) !i32 {
-        const self: *const Grant = @ptrCast(@alignCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?));
-        const client: *std.http.Client = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?)));
-        if (lua.typeOf(1) != .string or lua.typeOf(2) != .string or (lua.getTop() >= 3 and lua.typeOf(3) != .string)) return error.ExpectedBytes;
-        const method = std.meta.stringToEnum(std.http.Method, try lua.toString(1)) orelse return error.InvalidMethod;
-        const path = try lua.toString(2);
-        const body = if (lua.getTop() >= 3) try lua.toString(3) else null;
-        if (path.len == 0 or path[0] != '/' or (path.len > 1 and path[1] == '/') or std.mem.indexOfAny(u8, path, "\\\r\n") != null) return error.InvalidPath;
-        if (body) |bytes| if (bytes.len > self.max_bytes) return error.BodyTooLarge;
-        const url = try std.mem.concat(lua.allocator(), u8, &.{ self.origin, path });
-        defer lua.allocator().free(url);
-        var value = try client.request(method, try std.Uri.parse(url), .{
-            .redirect_behavior = .unhandled,
-            .extra_headers = self.headers,
-        });
-        defer value.deinit();
-        if (body) |bytes| try value.sendBodyComplete(@constCast(bytes)) else try value.sendBodiless();
-        var redirect_buffer: [4096]u8 = undefined;
-        var response = try value.receiveHead(&redirect_buffer);
-        var transfer_buffer: [8192]u8 = undefined;
-        const data = try response.reader(&transfer_buffer).allocRemaining(lua.allocator(), .limited(self.max_bytes));
-        defer lua.allocator().free(data);
-        lua.pushInteger(@intCast(@intFromEnum(response.head.status)));
-        _ = lua.pushString(data);
-        return 2;
+fn requestValue(lua: *zlua.Lua) !i32 {
+    if (lua.typeOf(1) != .string or lua.typeOf(2) != .string or
+        (lua.getTop() >= 3 and !lua.isNil(3) and lua.typeOf(3) != .string) or
+        (lua.getTop() >= 4 and !lua.isNil(4) and lua.typeOf(4) != .table))
+    {
+        return error.InvalidRequest;
     }
-};
+    const method = std.meta.stringToEnum(std.http.Method, try lua.toString(1)) orelse return error.InvalidMethod;
+    const path = try lua.toString(2);
+    if (path.len == 0 or path[0] != '/' or (path.len > 1 and path[1] == '/') or std.mem.indexOfAny(u8, path, "\\\r\n") != null) return error.InvalidPath;
+    var uri = try std.Uri.parse(try lua.toString(zlua.Lua.upvalueIndex(1)));
+    const relative = try std.Uri.parse(path);
+    if (relative.host != null or relative.fragment != null) return error.InvalidPath;
+    uri.path = relative.path;
+    uri.query = relative.query;
+    const extra = try requestHeaders(lua, 4);
+    defer if (extra) |headers| lua.allocator().free(headers);
+    const client: *std.http.Client = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?)));
+    var value = try client.request(method, uri, .{
+        .redirect_behavior = .unhandled,
+        .extra_headers = extra orelse &.{},
+    });
+    defer value.deinit();
+    const body = if (lua.getTop() >= 3 and !lua.isNil(3)) try lua.toString(3) else null;
+    if (method.requestHasBody()) {
+        try value.sendBodyComplete(@constCast(body orelse ""));
+    } else {
+        if (body) |bytes| if (bytes.len != 0) return error.UnexpectedBody;
+        try value.sendBodiless();
+    }
+    var head_buffer: [4096]u8 = undefined;
+    var response = try value.receiveHead(&head_buffer);
+    var body_buffer: [8192]u8 = undefined;
+    const data = try response.reader(&body_buffer).allocRemaining(lua.allocator(), .unlimited);
+    defer lua.allocator().free(data);
+    lua.pushInteger(@intCast(@intFromEnum(response.head.status)));
+    _ = lua.pushString(data);
+    return 2;
+}
+
+fn requestHeaders(lua: *zlua.Lua, index: i32) !?[]std.http.Header {
+    if (lua.getTop() < index or lua.isNil(index)) return null;
+    const table = lua.absIndex(index);
+    var count: usize = 0;
+    lua.pushNil();
+    while (lua.next(table)) {
+        if (lua.typeOf(-2) != .string or lua.typeOf(-1) != .string) return error.InvalidHeader;
+        try validateHeader(try lua.toString(-2), try lua.toString(-1));
+        count += 1;
+        lua.pop(1);
+    }
+    if (count == 0) return null;
+    const headers = try lua.allocator().alloc(std.http.Header, count);
+    errdefer lua.allocator().free(headers);
+    var offset: usize = 0;
+    lua.pushNil();
+    while (lua.next(table)) {
+        headers[offset] = .{ .name = try lua.toString(-2), .value = try lua.toString(-1) };
+        offset += 1;
+        lua.pop(1);
+    }
+    return headers;
+}
+
+fn validateHeader(name: []const u8, value: []const u8) !void {
+    if (name.len == 0) return error.InvalidHeader;
+    for (name) |byte| {
+        if (!std.ascii.isAlphanumeric(byte) and std.mem.indexOfScalar(u8, "!#$%&'*+-.^_`|~", byte) == null) return error.InvalidHeader;
+    }
+    for (value) |byte| if (byte < ' ' and byte != '\t' or byte == 127) return error.InvalidHeader;
+    inline for (.{ "host", "content-length", "transfer-encoding", "connection", "proxy-connection", "proxy-authorization", "trailer", "upgrade" }) |blocked| {
+        if (std.ascii.eqlIgnoreCase(name, blocked)) return error.ForbiddenHeader;
+    }
+}

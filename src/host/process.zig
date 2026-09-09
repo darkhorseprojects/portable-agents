@@ -1,79 +1,97 @@
 const std = @import("std");
 const zlua = @import("zlua");
-const identity = @import("../identity.zig");
 
-const Allocator = std.mem.Allocator;
+pub fn install(lua: *zlua.Lua, io: *const std.Io, canceled: *std.atomic.Value(bool)) void {
+    lua.pushLightUserdata(io);
+    lua.pushLightUserdata(canceled);
+    lua.pushClosure(zlua.wrap(create), 2);
+    lua.setField(-2, "process");
+}
 
-pub const Config = struct {
-    name: []const u8,
-    executable: []const u8,
-    cwd: ?[]const u8 = null,
-    argv_prefix: []const []const u8 = &.{},
-    eval: bool = false,
-    max_output_bytes: usize = 8 * 1024 * 1024,
-};
+fn create(lua: *zlua.Lua) !i32 {
+    if (lua.typeOf(1) != .string) return error.ExpectedExecutable;
+    const executable = try lua.toString(1);
+    if (!std.fs.path.isAbsolute(executable)) return error.ExpectedAbsolutePath;
+    lua.createTable(0, 1);
+    lua.pushValue(1);
+    lua.pushValue(zlua.Lua.upvalueIndex(1));
+    lua.pushValue(zlua.Lua.upvalueIndex(2));
+    lua.pushClosure(zlua.wrap(run), 3);
+    lua.setField(-2, "run");
+    return 1;
+}
 
-pub const Grant = struct {
-    name: []const u8,
-    executable: []const u8,
-    cwd: ?[]const u8,
-    argv_prefix: []const []const u8,
-    eval: bool,
-    max_output_bytes: usize,
+fn run(lua: *zlua.Lua) !i32 {
+    const canceled: *std.atomic.Value(bool) = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(3)).?)));
+    return runValue(lua) catch |err| {
+        if (err == error.Canceled) canceled.store(true, .release);
+        return err;
+    };
+}
 
-    pub fn init(allocator: Allocator, config: Config) !Grant {
-        const prefix = try allocator.alloc([]const u8, config.argv_prefix.len);
-        for (config.argv_prefix, prefix) |source, *target| target.* = try allocator.dupe(u8, source);
-        return .{
-            .name = try allocator.dupe(u8, config.name),
-            .executable = try allocator.dupe(u8, config.executable),
-            .cwd = if (config.cwd) |cwd| try allocator.dupe(u8, cwd) else null,
-            .argv_prefix = prefix,
-            .eval = config.eval,
-            .max_output_bytes = config.max_output_bytes,
-        };
+fn runValue(lua: *zlua.Lua) !i32 {
+    if (lua.typeOf(1) != .table or (lua.getTop() >= 2 and !lua.isNil(2) and lua.typeOf(2) != .string)) return error.InvalidProcessCall;
+    const count = try denseLength(lua, 1);
+    const argv = try lua.allocator().alloc([]const u8, try std.math.add(usize, count, 1));
+    defer lua.allocator().free(argv);
+    argv[0] = try lua.toString(zlua.Lua.upvalueIndex(1));
+    for (argv[1..], 1..) |*argument, index| {
+        _ = lua.getIndex(1, @intCast(index));
+        argument.* = try lua.toString(-1);
+        lua.pop(1);
     }
+    const io: *const std.Io = @ptrCast(@alignCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?));
+    var child = try std.process.spawn(io.*, .{
+        .argv = argv,
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    defer child.kill(io.*);
+    const input_file = child.stdin.?;
+    child.stdin = null;
+    const input = if (lua.getTop() >= 2 and !lua.isNil(2)) try lua.toString(2) else "";
+    var sender = try io.concurrent(sendInput, .{ input_file, io.*, input });
+    defer _ = sender.cancel(io.*) catch {};
+    var storage: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var outputs: std.Io.File.MultiReader = undefined;
+    outputs.init(lua.allocator(), io.*, storage.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer outputs.deinit();
+    try outputs.fillRemaining(.none);
+    try outputs.checkAnyError();
+    try sender.await(io.*);
+    const term = try child.wait(io.*);
+    const stdout = try outputs.toOwnedSlice(0);
+    defer lua.allocator().free(stdout);
+    const stderr = try outputs.toOwnedSlice(1);
+    defer lua.allocator().free(stderr);
+    const code = switch (term) {
+        .exited => |value| value,
+        else => return error.AbnormalTermination,
+    };
+    lua.pushInteger(code);
+    _ = lua.pushString(stdout);
+    _ = lua.pushString(stderr);
+    return 3;
+}
 
-    pub fn push(self: *const Grant, lua: *zlua.Lua, caller: *identity.Caller) void {
-        lua.createTable(0, 1);
-        lua.pushLightUserdata(self);
-        lua.pushLightUserdata(caller);
-        lua.pushClosure(zlua.wrap(run), 2);
-        lua.setField(-2, "run");
-    }
+fn sendInput(file: std.Io.File, io: std.Io, input: []const u8) !void {
+    defer file.close(io);
+    try file.writeStreamingAll(io, input);
+}
 
-    fn run(lua: *zlua.Lua) !i32 {
-        const self: *const Grant = @ptrCast(@alignCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?));
-        const caller: *identity.Caller = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?)));
-        if (lua.typeOf(1) != .table) return error.ExpectedTable;
-        const count = lua.lenRaw(1);
-        const base = try std.math.add(usize, 1, self.argv_prefix.len);
-        const argv = try lua.allocator().alloc([]const u8, try std.math.add(usize, base, count));
-        defer lua.allocator().free(argv);
-        argv[0] = self.executable;
-        @memcpy(argv[1..][0..self.argv_prefix.len], self.argv_prefix);
-        for (argv[base..], 1..) |*arg, index| {
-            _ = lua.getIndex(1, @intCast(index));
-            if (lua.typeOf(-1) != .string) return error.ExpectedBytes;
-            arg.* = try lua.toString(-1);
-            lua.pop(1);
-        }
-        const result = try std.process.run(lua.allocator(), caller.io, .{
-            .argv = argv,
-            .cwd = if (self.cwd) |cwd| .{ .path = cwd } else .inherit,
-            .stdout_limit = .limited(self.max_output_bytes),
-            .stderr_limit = .limited(self.max_output_bytes),
-        });
-        defer lua.allocator().free(result.stdout);
-        defer lua.allocator().free(result.stderr);
-        if (result.stdout.len > self.max_output_bytes or result.stderr.len > self.max_output_bytes - result.stdout.len) return error.OutputTooLarge;
-        const code = switch (result.term) {
-            .exited => |value| value,
-            else => return error.AbnormalTermination,
-        };
-        lua.pushInteger(code);
-        _ = lua.pushString(result.stdout);
-        _ = lua.pushString(result.stderr);
-        return 3;
+fn denseLength(lua: *zlua.Lua, index: i32) !usize {
+    const table = lua.absIndex(index);
+    const length = lua.lenRaw(table);
+    var entries: usize = 0;
+    lua.pushNil();
+    while (lua.next(table)) {
+        if (lua.typeOf(-2) != .number or lua.typeOf(-1) != .string) return error.ExpectedArgv;
+        const key = try lua.toInteger(-2);
+        if (key < 1 or std.math.cast(usize, key) == null or @as(usize, @intCast(key)) > length) return error.ExpectedArgv;
+        entries += 1;
+        lua.pop(1);
     }
-};
+    if (entries != length) return error.ExpectedArgv;
+    return length;
+}

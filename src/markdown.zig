@@ -13,21 +13,25 @@ pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
         \\ if value==nil then value={} parent[name]=value end
         \\ return value
         \\end
-        \\local root={}
-        \\local current=root
+        \\local document={}
+        \\local current=document
         \\local s1,s2,s3,s4,s5,s6
         \\local function add(value) current[#current+1]=value end
         \\
     );
     var active = [_]bool{false} ** 6;
+    var has_lua = false;
     var pos: usize = 0;
     while (pos < source.len) {
         var next = pos;
         const line = lineAt(source, &next);
         if (trim(line).len == 0) {
             pos = next;
-        } else if (fenceStart(line) != null) {
-            try emitFence(out, source, &pos);
+        } else if (fenceStart(line)) |language| {
+            if (std.mem.eql(u8, language, "lua")) {
+                has_lua = true;
+                try skipFence(source, &pos);
+            } else try emitFence(out, source, &pos);
         } else if (heading(line)) |item| {
             try emitHeading(out, item.level, item.text, &active);
             pos = next;
@@ -39,7 +43,7 @@ pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
             try emitText(out, source, &pos);
         }
     }
-    try out.writeAll("return root\n");
+    if (has_lua) try emitLua(out, source) else try out.writeAll("return document\n");
     return output.toOwnedSlice();
 }
 
@@ -65,7 +69,11 @@ fn heading(line: []const u8) ?struct { level: usize, text: []const u8 } {
 
 fn listItem(line: []const u8) ?[]const u8 {
     const value = trim(line);
-    return if (std.mem.startsWith(u8, value, "- ")) trim(value[2..]) else null;
+    if (value.len >= 2 and (value[0] == '-' or value[0] == '*' or value[0] == '+') and value[1] == ' ') return trim(value[2..]);
+    var end: usize = 0;
+    while (end < value.len and std.ascii.isDigit(value[end])) end += 1;
+    if (end == 0 or end + 1 >= value.len or value[end] != '.' or value[end + 1] != ' ') return null;
+    return trim(value[end + 2 ..]);
 }
 
 fn tableStart(source: []const u8, pos: usize) bool {
@@ -101,7 +109,7 @@ fn emitHeading(out: *Writer, level: usize, text: []const u8, active: *[6]bool) !
     for (level - 1..6) |i| active[i] = false;
     active[level - 1] = true;
     try out.print("s{d}=section(", .{level});
-    if (parent == 0) try out.writeAll("root") else try out.print("s{d}", .{parent});
+    if (parent == 0) try out.writeAll("document") else try out.print("s{d}", .{parent});
     try out.writeByte(',');
     try writeLuaString(out, text);
     try out.print(") current=s{d}\n", .{level});
@@ -190,6 +198,32 @@ fn emitFence(out: *Writer, source: []const u8, pos: *usize) !void {
         try out.writeAll("..\"\\n\"");
     }
     return error.UnclosedFence;
+}
+
+fn skipFence(source: []const u8, pos: *usize) !void {
+    _ = lineAt(source, pos);
+    while (pos.* < source.len) {
+        if (std.mem.eql(u8, trim(lineAt(source, pos)), "```")) return;
+    }
+    return error.UnclosedFence;
+}
+
+fn emitLua(out: *Writer, source: []const u8) !void {
+    var pos: usize = 0;
+    while (pos < source.len) {
+        const line = lineAt(source, &pos);
+        const language = fenceStart(line) orelse continue;
+        if (!std.mem.eql(u8, language, "lua")) {
+            while (pos < source.len) if (std.mem.eql(u8, trim(lineAt(source, &pos)), "```")) break;
+            continue;
+        }
+        while (pos < source.len) {
+            const body = lineAt(source, &pos);
+            if (std.mem.eql(u8, trim(body), "```")) break;
+            try out.writeAll(body);
+            try out.writeByte('\n');
+        }
+    }
 }
 
 fn writeLuaString(out: *Writer, value: []const u8) !void {
