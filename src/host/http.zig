@@ -79,26 +79,17 @@ fn requestValue(lua: *zlua.Lua) !i32 {
 
 fn requestHeaders(lua: *zlua.Lua, index: i32) !?[]std.http.Header {
     if (lua.getTop() < index or lua.isNil(index)) return null;
-    const table = lua.absIndex(index);
-    var count: usize = 0;
+    var headers: std.ArrayList(std.http.Header) = .empty;
+    errdefer headers.deinit(lua.allocator());
     lua.pushNil();
-    while (lua.next(table)) {
+    while (lua.next(lua.absIndex(index))) {
         if (lua.typeOf(-2) != .string or lua.typeOf(-1) != .string) return error.InvalidHeader;
-        try validateHeader(try lua.toString(-2), try lua.toString(-1));
-        count += 1;
+        const header: std.http.Header = .{ .name = try lua.toString(-2), .value = try lua.toString(-1) };
+        try validateHeader(header.name, header.value);
+        try headers.append(lua.allocator(), header);
         lua.pop(1);
     }
-    if (count == 0) return null;
-    const headers = try lua.allocator().alloc(std.http.Header, count);
-    errdefer lua.allocator().free(headers);
-    var offset: usize = 0;
-    lua.pushNil();
-    while (lua.next(table)) {
-        headers[offset] = .{ .name = try lua.toString(-2), .value = try lua.toString(-1) };
-        offset += 1;
-        lua.pop(1);
-    }
-    return headers;
+    return if (headers.items.len == 0) null else try headers.toOwnedSlice(lua.allocator());
 }
 
 fn validateRequestBytes(value: []const u8) !void {

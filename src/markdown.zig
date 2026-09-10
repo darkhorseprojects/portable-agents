@@ -227,16 +227,5 @@ fn emitLua(out: *Writer, source: []const u8) !void {
 }
 
 fn writeLuaString(out: *Writer, value: []const u8) !void {
-    const hex = "0123456789abcdef";
-    try out.writeByte('"');
-    for (value) |byte| switch (byte) {
-        '"' => try out.writeAll("\\\""),
-        '\\' => try out.writeAll("\\\\"),
-        '\n' => try out.writeAll("\\n"),
-        '\r' => try out.writeAll("\\r"),
-        '\t' => try out.writeAll("\\t"),
-        0...8, 11...12, 14...31, 127...255 => try out.writeAll(&.{ '\\', 'x', hex[byte >> 4], hex[byte & 15] }),
-        else => try out.writeByte(byte),
-    };
-    try out.writeByte('"');
+    try out.print("\"{f}\"", .{std.zig.fmtString(value)});
 }

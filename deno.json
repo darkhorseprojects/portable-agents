@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "effect": "npm:effect@4.0.0-rc.112",
+    "effect/unstable/process": "npm:effect@4.0.0-rc.112/unstable/process"
+  }
+}

@@ -5,8 +5,7 @@ const identity = @import("identity.zig");
 const host = @import("host.zig");
 
 const Allocator = std.mem.Allocator;
-const EvalResult = anyerror![]u8;
-const EvalFuture = std.Io.Future(EvalResult);
+const EvalFuture = std.Io.Future(anyerror![]u8);
 const HookDebug = @typeInfo(@typeInfo(zlua.CHookFn).pointer.child).@"fn".params[1].type.?;
 
 pub const Entry = struct {
@@ -22,10 +21,10 @@ pub const Mount = struct {
 
 pub const Context = struct {
     agent: *anyopaque,
-    call_agent: *const fn (*anyopaque, Allocator, Entry, []const u8) anyerror![]u8,
+    call_agent: *const fn (*anyopaque, Allocator, *const package.Image, Entry, []const u8) anyerror![]u8,
     quota: *Quota,
     client: *std.http.Client,
-    image: *package.Image,
+    image: *const package.Image,
     entry: Entry,
     identity: *const identity.Identity,
     mounts: []const Mount,
@@ -84,7 +83,7 @@ pub fn call(context: *Context, input: []const u8) ![]u8 {
 fn open(context: *Context) !*zlua.Lua {
     const state = try zlua.Lua.init(context.quota.allocator());
     errdefer state.deinit();
-    setContext(state, context);
+    @as(**Context, @ptrCast(@alignCast(state.getExtraSpace().ptr))).* = context;
     state.openLibs();
     state.setHook(hook, .{ .count = true }, 1000);
     _ = state.getField(zlua.registry_index, zlua.preload_table);
@@ -110,7 +109,12 @@ fn installCore(state: *zlua.Lua) !void {
     try host.install(state, &context.client.io, context.client, context.canceled);
     state.setGlobal("pa");
     try state.loadBuffer(
-        \\local mark,self=pa._mark,pa._self
+        \\local mark,self,require,select=pa._mark,pa._self,require,select
+        \\function pa._resolve(module,...)
+        \\ local value=require(module)
+        \\ for index=1,select("#",...) do value=value[select(index,...)] end
+        \\ return value
+        \\end
         \\function pa.interface(call,modules)
         \\ if type(call)~="function" or modules~=nil and type(modules)~="table" then error("invalid interface",2) end
         \\ local interface={}
@@ -136,21 +140,20 @@ fn markInterface(state: *zlua.Lua) !i32 {
 }
 
 fn resolveEntry(state: *zlua.Lua) !void {
-    const context = getContext(state);
-    _ = state.getGlobal("require");
-    _ = state.pushString(context.entry.module);
-    state.protectedCall(.{ .args = 1, .results = 1 }) catch return luaError(state);
-    for (context.entry.members) |member| {
-        _ = state.pushString(member);
-        _ = state.getTable(-2);
-        state.remove(-2);
-    }
+    const entry = getContext(state).entry;
+    _ = state.getGlobal("pa");
+    _ = state.getField(-1, "_resolve");
+    state.remove(-2);
+    _ = state.pushString(entry.module);
+    for (entry.members) |member| _ = state.pushString(member);
+    const args = std.math.cast(i32, try std.math.add(usize, entry.members.len, 1)) orelse return error.TooManyMembers;
+    state.protectedCall(.{ .args = args, .results = 1 }) catch return luaError(state);
     _ = try identity.read(state, -1);
 }
 
 fn selfCall(state: *zlua.Lua) !i32 {
     const context: *Context = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
-    const output = context.call_agent(context.agent, state.allocator(), context.entry, try bytes(state, 1)) catch |err| {
+    const output = context.call_agent(context.agent, state.allocator(), context.image, context.entry, try bytes(state, 1)) catch |err| {
         if (err == error.Canceled) context.canceled.store(true, .release);
         return err;
     };
@@ -202,7 +205,7 @@ fn eval(state: *zlua.Lua) !i32 {
     return 1;
 }
 
-fn evalOne(parent: *const Context, source: []const u8, input: []const u8) EvalResult {
+fn evalOne(parent: *const Context, source: []const u8, input: []const u8) anyerror![]u8 {
     var quota = Quota{ .child = parent.quota.child, .limit = parent.quota.limit };
     var context = parent.*;
     context.quota = &quota;
@@ -297,10 +300,6 @@ fn hook(raw: ?*zlua.LuaState, _: HookDebug) callconv(.c) void {
     };
     if (context.steps_left < 1000) state.raiseErrorStr("step limit exceeded", .{});
     context.steps_left -= 1000;
-}
-
-fn setContext(state: *zlua.Lua, context: *Context) void {
-    @as(**Context, @ptrCast(@alignCast(state.getExtraSpace().ptr))).* = context;
 }
 
 fn getContext(state: *zlua.Lua) *Context {
