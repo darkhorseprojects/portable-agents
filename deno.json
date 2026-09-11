@@ -1,6 +1,7 @@
 {
+  "lock": false,
   "imports": {
-    "effect": "npm:effect@4.0.0-rc.112",
-    "effect/unstable/process": "npm:effect@4.0.0-rc.112/unstable/process"
+    "effect": "npm:effect@4.0.0-rc.113",
+    "effect/unstable/process": "npm:effect@4.0.0-rc.113/unstable/process"
   }
 }

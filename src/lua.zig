@@ -13,20 +13,23 @@ pub const Entry = struct {
     members: []const []const u8 = &.{},
 };
 
+pub const Interface = struct {
+    identity: identity.Identity,
+    context: *anyopaque,
+    call: *const fn (*anyopaque, Allocator, []const u8) anyerror![]u8,
+};
+
 pub const Mount = struct {
     name: []const u8,
-    context: *anyopaque,
-    load: *const fn (*anyopaque, *zlua.Lua, i32) anyerror!void,
+    interface: Interface,
 };
 
 pub const Context = struct {
-    agent: *anyopaque,
-    call_agent: *const fn (*anyopaque, Allocator, *const package.Image, Entry, []const u8) anyerror![]u8,
+    self: Interface,
     quota: *Quota,
     client: *std.http.Client,
     image: *const package.Image,
     entry: Entry,
-    identity: *const identity.Identity,
     mounts: []const Mount,
     lua_steps: u64,
     steps_left: u64,
@@ -98,22 +101,22 @@ fn open(context: *Context) !*zlua.Lua {
 
 fn installCore(state: *zlua.Lua) !void {
     const context = getContext(state);
-    state.createTable(0, 6);
+    state.createTable(0, 8);
     state.pushFunction(zlua.wrap(markInterface));
     state.setField(-2, "_mark");
     state.pushLightUserdata(context);
     state.pushClosure(zlua.wrap(selfCall), 1);
     state.setField(-2, "_self");
+    state.pushFunction(zlua.wrap(interfaceIdentity));
+    state.setField(-2, "_identity");
     state.pushFunction(zlua.wrap(eval));
     state.setField(-2, "eval");
     try host.install(state, &context.client.io, context.client, context.canceled);
     state.setGlobal("pa");
     try state.loadBuffer(
-        \\local mark,self,require,select=pa._mark,pa._self,require,select
+        \\local mark,self,identity,require,select=pa._mark,pa._self,pa._identity,require,select
         \\function pa._resolve(module,...)
-        \\ local value=require(module)
-        \\ for index=1,select("#",...) do value=value[select(index,...)] end
-        \\ return value
+        \\ local value=require(module) for index=1,select("#",...) do value=value[select(index,...)] end return value
         \\end
         \\function pa.interface(call,modules)
         \\ if type(call)~="function" or modules~=nil and type(modules)~="table" then error("invalid interface",2) end
@@ -127,14 +130,40 @@ fn installCore(state: *zlua.Lua) !void {
         \\ return mark(setmetatable(interface,{__call=function(_,...) return call(...) end,__metatable=false}))
         \\end
         \\function pa.self() return pa.interface(self) end
-        \\pa._mark,pa._self=nil,nil
-    , "pa interface", .text);
+        \\pa.identity=identity
+        \\function pa._public(interface,mounts)
+        \\ local base={"assert","error","ipairs","next","pairs","rawequal","rawget","rawlen","rawset","select","getmetatable","setmetatable","tonumber","tostring","type","_VERSION"}
+        \\ local libraries={"math","string","table","utf8"}
+        \\ local function clone(source) local target={} for key,value in pairs(source) do target[key]=value end return target end
+        \\ local preload={}
+        \\ for _,values in ipairs({interface,mounts}) do
+        \\  for name,value in pairs(values) do
+        \\   if preload[name]~=nil then error("duplicate eval module: "..name,0) end
+        \\   preload[name]=function() return value end
+        \\  end
+        \\ end
+        \\ local env={identity=identity} for _,name in ipairs(base) do env[name]=_G[name] end
+        \\ for _,name in ipairs(libraries) do env[name]=clone(_G[name]) end
+        \\ local package={preload=preload,loaded={}} env.package=package env._G=env
+        \\ local loading={}
+        \\ env.require=function(name)
+        \\  local value=package.loaded[name] if value~=nil then return value end
+        \\  local loader=package.preload[name] if loader==nil then error("module not found: "..tostring(name),0) end
+        \\  if loading[name] then error("cyclic module: "..tostring(name),0) end loading[name]=true
+        \\  local ok,result=pcall(loader,name) loading[name]=nil if not ok then error(result,0) end
+        \\  if result~=nil then package.loaded[name]=result end if package.loaded[name]==nil then package.loaded[name]=true end
+        \\  return package.loaded[name]
+        \\ end
+        \\ return env
+        \\end
+        \\pa._mark,pa._self,pa._identity=nil,nil,nil
+    , "pa", .text);
     state.protectedCall(.{}) catch return luaError(state);
 }
 
 fn markInterface(state: *zlua.Lua) !i32 {
     state.getMetatable(1) catch unreachable;
-    identity.mark(state, -1, getContext(state).identity.*);
+    identity.mark(state, -1, getContext(state).self.identity);
     state.pushValue(1);
     return 1;
 }
@@ -151,15 +180,15 @@ fn resolveEntry(state: *zlua.Lua) !void {
     _ = try identity.read(state, -1);
 }
 
+fn interfaceIdentity(state: *zlua.Lua) !i32 {
+    const value = try identity.read(state, 1);
+    _ = state.pushString(&value);
+    return 1;
+}
+
 fn selfCall(state: *zlua.Lua) !i32 {
     const context: *Context = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
-    const output = context.call_agent(context.agent, state.allocator(), context.image, context.entry, try bytes(state, 1)) catch |err| {
-        if (err == error.Canceled) context.canceled.store(true, .release);
-        return err;
-    };
-    defer state.allocator().free(output);
-    _ = state.pushString(output);
-    return 1;
+    return invoke(state, &context.self, 1);
 }
 
 fn eval(state: *zlua.Lua) !i32 {
@@ -226,59 +255,46 @@ fn evalOne(parent: *const Context, source: []const u8, input: []const u8) anyerr
 fn publicEnvironment(state: *zlua.Lua, interface: i32) !i32 {
     const interface_index = state.absIndex(interface);
     state.createTable(0, @intCast(getContext(state).mounts.len));
-    const preload = state.absIndex(-1);
-    try state.loadBuffer(
-        \\local base={"assert","error","ipairs","next","pairs","rawequal","rawget","rawlen","rawset","select","getmetatable","setmetatable","tonumber","tostring","type","_VERSION"}
-        \\local libraries={"math","string","table","utf8"}
-        \\local pcall,error,tostring=pcall,error,tostring
-        \\local function clone(source) local target={} for key,value in pairs(source) do target[key]=value end return target end
-        \\return function(interface,preload)
-        \\ for name,value in pairs(interface) do
-        \\  if preload[name]~=nil then error("duplicate eval module: "..name,0) end
-        \\  preload[name]=function() return value end
-        \\ end
-        \\ local env={} for _,name in ipairs(base) do env[name]=_G[name] end
-        \\ for _,name in ipairs(libraries) do env[name]=clone(_G[name]) end
-        \\ local package={preload=preload,loaded={}} env.package=package env._G=env
-        \\ local loading={}
-        \\ env.require=function(name)
-        \\  local value=package.loaded[name] if value~=nil then return value end
-        \\  local loader=package.preload[name] if loader==nil then error("module not found: "..tostring(name),0) end
-        \\  if loading[name] then error("cyclic module: "..tostring(name),0) end loading[name]=true
-        \\  local ok,result=pcall(loader,name) loading[name]=nil if not ok then error(result,0) end
-        \\  if result~=nil then package.loaded[name]=result end if package.loaded[name]==nil then package.loaded[name]=true end
-        \\  return package.loaded[name]
-        \\ end
-        \\ return env
-        \\end
-    , "public environment", .text);
-    state.protectedCall(.{ .results = 1 }) catch return luaError(state);
-    state.pushValue(interface_index);
-    state.pushValue(preload);
-    state.protectedCall(.{ .args = 2, .results = 1 }) catch return luaError(state);
-    const environment = state.absIndex(-1);
+    const mounts = state.absIndex(-1);
     for (getContext(state).mounts) |*mount| {
         _ = state.pushString(mount.name);
-        if (state.getTableRaw(preload) != .nil) return error.DuplicateEvalModule;
-        state.pop(1);
-        _ = state.pushString(mount.name);
-        state.pushLightUserdata(mount);
-        state.pushValue(environment);
-        state.pushClosure(zlua.wrap(loadMount), 2);
-        state.setTableRaw(preload);
+        pushInterface(state, &mount.interface);
+        state.setTableRaw(mounts);
     }
-    state.remove(preload);
+    _ = state.getGlobal("pa");
+    _ = state.getField(-1, "_public");
+    state.remove(-2);
+    state.pushValue(interface_index);
+    state.pushValue(mounts);
+    state.protectedCall(.{ .args = 2, .results = 1 }) catch return luaError(state);
+    state.remove(mounts);
     return state.absIndex(-1);
 }
 
-fn loadMount(state: *zlua.Lua) !i32 {
-    const mount: *const Mount = @ptrCast(@alignCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?));
-    const top = state.getTop();
-    mount.load(mount.context, state, zlua.Lua.upvalueIndex(2)) catch |err| {
+fn pushInterface(state: *zlua.Lua, interface: *const Interface) void {
+    state.createTable(0, 0);
+    state.createTable(0, 2);
+    state.pushLightUserdata(@constCast(interface));
+    state.pushClosure(zlua.wrap(callInterface), 1);
+    state.setField(-2, "__call");
+    state.pushBoolean(false);
+    state.setField(-2, "__metatable");
+    identity.mark(state, -1, interface.identity);
+    state.setMetatable(-2);
+}
+
+fn callInterface(state: *zlua.Lua) !i32 {
+    const interface: *const Interface = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
+    return invoke(state, interface, 2);
+}
+
+fn invoke(state: *zlua.Lua, interface: *const Interface, input: i32) !i32 {
+    const output = interface.call(interface.context, state.allocator(), try bytes(state, input)) catch |err| {
         if (err == error.Canceled) getContext(state).canceled.store(true, .release);
         return err;
     };
-    if (state.getTop() != top + 1) return error.InvalidMountLoader;
+    defer state.allocator().free(output);
+    _ = state.pushString(output);
     return 1;
 }
 
