@@ -1,12 +1,10 @@
 const std = @import("std");
 const pa = @import("pa");
 
-const ReplyResult = anyerror![]u8;
-
 const Pending = struct {
     allocator: std.mem.Allocator,
-    storage: [1]ReplyResult = undefined,
-    queue: std.Io.Queue(ReplyResult) = undefined,
+    event: std.Io.Event = .unset,
+    result: anyerror![]u8 = undefined,
 };
 
 const Bridge = struct {
@@ -18,31 +16,33 @@ const Bridge = struct {
     next_request: u32 = 1,
     failure: ?anyerror = null,
 
-    fn request(self: *Bridge, pending: *Pending, name: []const u8, input: []const u8) !u32 {
-        try self.mutex.lock(self.io);
-        defer self.mutex.unlock(self.io);
-        if (self.failure) |err| return err;
-        const id = self.next_request;
-        if (id == std.math.maxInt(u32)) return error.RequestIdsExhausted;
-        self.next_request += 1;
-        try self.pending.put(id, pending);
-        self.sendMount(id, name, input) catch |err| {
-            _ = self.pending.remove(id);
+    fn call(self: *Bridge, allocator: std.mem.Allocator, name: []const u8, input: []const u8) ![]u8 {
+        var pending = Pending{ .allocator = allocator };
+        const id = id: {
+            try self.mutex.lock(self.io);
+            defer self.mutex.unlock(self.io);
+            if (self.failure) |err| return err;
+            const encoded = try encodeBase64(self.pending.allocator, input);
+            defer self.pending.allocator.free(encoded);
+            const id = self.next_request;
+            if (id == std.math.maxInt(u32)) return error.RequestIdsExhausted;
+            self.next_request += 1;
+            try self.pending.put(id, &pending);
+            errdefer _ = self.pending.remove(id);
+            try writeLine(self.writer, .{ .mount = .{ .id = id, .name = name, .input = encoded } });
+            break :id id;
+        };
+        pending.event.wait(self.io) catch |err| {
+            self.mutex.lockUncancelable(self.io);
+            const claimed = self.pending.remove(id);
+            self.mutex.unlock(self.io);
+            if (!claimed) {
+                pending.event.waitUncancelable(self.io);
+                if (pending.result) |bytes| allocator.free(bytes) else |_| {}
+            }
             return err;
         };
-        return id;
-    }
-
-    fn remove(self: *Bridge, id: u32) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        _ = self.pending.remove(id);
-    }
-
-    fn sendMount(self: *Bridge, id: u32, name: []const u8, input: []const u8) !void {
-        const encoded = try encodeBase64(self.pending.allocator, input);
-        defer self.pending.allocator.free(encoded);
-        try writeLine(self.writer, .{ .mount = .{ .id = id, .name = name, .input = encoded } });
+        return pending.result;
     }
 
     fn fail(self: *Bridge, err: anyerror) void {
@@ -50,7 +50,11 @@ const Bridge = struct {
         defer self.mutex.unlock(self.io);
         self.failure = err;
         var values = self.pending.valueIterator();
-        while (values.next()) |pending| pending.*.queue.putOneUncancelable(self.io, err) catch {};
+        while (values.next()) |pending| {
+            pending.*.result = err;
+            pending.*.event.set(self.io);
+        }
+        self.pending.clearRetainingCapacity();
     }
 };
 
@@ -60,17 +64,8 @@ const ProtocolInterface = struct {
 
     fn call(pointer: *anyopaque, allocator: std.mem.Allocator, input: []const u8) ![]u8 {
         const self: *ProtocolInterface = @ptrCast(@alignCast(pointer));
-        var pending = Pending{ .allocator = allocator };
-        pending.queue = .init(&pending.storage);
-        const id = try self.bridge.request(&pending, self.name, input);
-        defer self.bridge.remove(id);
-        return try (try pending.queue.getOne(self.bridge.io));
+        return self.bridge.call(allocator, self.name, input);
     }
-};
-
-const WireMount = struct {
-    name: []const u8,
-    identity: []const u8,
 };
 
 const Request = struct {
@@ -78,15 +73,9 @@ const Request = struct {
     identity: []const u8,
     luaBytes: usize,
     luaSteps: []const u8,
-    mounts: []const WireMount = &.{},
+    mounts: []const struct { name: []const u8, identity: []const u8 } = &.{},
     entry: pa.Entry,
     input: []const u8,
-};
-
-const Reply = struct {
-    id: u32,
-    output: ?[]const u8 = null,
-    @"error": ?[]const u8 = null,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -123,19 +112,15 @@ fn runCall(allocator: std.mem.Allocator, io: std.Io, source: []const u8, input: 
     const line = (try readLine(scratch, input)) orelse return error.MissingRequest;
     const request = try std.json.parseFromSliceLeaky(Request, scratch, line, .{});
     if (request.version != 1) return error.InvalidProtocol;
-    const identity_bytes = try decodeBase64(scratch, request.identity);
-    if (identity_bytes.len != @sizeOf(pa.Identity)) return error.InvalidIdentity;
     const call_input = try decodeBase64(scratch, request.input);
     var bridge = Bridge{ .io = io, .reader = input, .writer = output, .pending = .init(allocator) };
     defer bridge.pending.deinit();
     const contexts = try scratch.alloc(ProtocolInterface, request.mounts.len);
     const mounts = try scratch.alloc(pa.Mount, request.mounts.len);
     for (contexts, mounts, request.mounts) |*context, *mount, wire| {
-        const mount_identity = try decodeBase64(scratch, wire.identity);
-        if (mount_identity.len != @sizeOf(pa.Identity)) return error.InvalidIdentity;
         context.* = .{ .bridge = &bridge, .name = wire.name };
         mount.* = .{ .name = wire.name, .interface = .{
-            .identity = mount_identity[0..@sizeOf(pa.Identity)].*,
+            .identity = try decodeIdentity(wire.identity),
             .context = context,
             .call = ProtocolInterface.call,
         } };
@@ -143,40 +128,32 @@ fn runCall(allocator: std.mem.Allocator, io: std.Io, source: []const u8, input: 
     var image = try pa.Image.init(allocator, io, source);
     defer image.deinit();
     var agent = pa.Agent.init(allocator, io, .{
-        .identity = identity_bytes[0..@sizeOf(pa.Identity)].*,
+        .identity = try decodeIdentity(request.identity),
         .lua_bytes = request.luaBytes,
         .lua_steps = try std.fmt.parseInt(u64, request.luaSteps, 10),
     });
     defer agent.deinit();
     var replies = io.async(dispatch, .{&bridge});
-    const result = agent.call(allocator, &image, request.entry, call_input, mounts) catch |err| {
-        _ = replies.cancel(io) catch {};
-        return err;
-    };
-    errdefer allocator.free(result);
-    _ = replies.cancel(io) catch {};
-    if (bridge.pending.count() != 0) return error.PendingMounts;
-    return result;
+    defer _ = replies.cancel(io) catch {};
+    return agent.call(allocator, &image, request.entry, call_input, mounts);
 }
 
 fn dispatch(bridge: *Bridge) anyerror!void {
     errdefer |err| bridge.fail(err);
     while (try readLine(bridge.pending.allocator, bridge.reader)) |line| {
         defer bridge.pending.allocator.free(line);
-        var message = try std.json.parseFromSlice(struct { reply: Reply }, bridge.pending.allocator, line, .{});
+        var message = try std.json.parseFromSlice(struct {
+            reply: struct { id: u32, output: ?[]const u8 = null, @"error": ?[]const u8 = null },
+        }, bridge.pending.allocator, line, .{});
         defer message.deinit();
         const reply = message.value.reply;
         if ((reply.output == null) == (reply.@"error" == null)) return error.InvalidProtocol;
         bridge.mutex.lockUncancelable(bridge.io);
         defer bridge.mutex.unlock(bridge.io);
-        const pending = (bridge.pending.fetchRemove(reply.id) orelse return error.UnknownRequest).value;
-        if (reply.output) |encoded| {
-            const decoded = try decodeBase64(pending.allocator, encoded);
-            pending.queue.putOneUncancelable(bridge.io, decoded) catch {
-                pending.allocator.free(decoded);
-                return error.Closed;
-            };
-        } else try pending.queue.putOneUncancelable(bridge.io, error.MountFailure);
+        const pending = bridge.pending.get(reply.id) orelse return error.UnknownRequest;
+        pending.result = if (reply.output) |encoded| try decodeBase64(pending.allocator, encoded) else error.MountFailure;
+        _ = bridge.pending.remove(reply.id);
+        pending.event.set(bridge.io);
     }
     return error.ProtocolEof;
 }
@@ -195,6 +172,13 @@ fn readLine(allocator: std.mem.Allocator, reader: *std.Io.Reader) !?[]u8 {
 fn encodeBase64(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
     const output = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
     return @constCast(std.base64.standard.Encoder.encode(output, bytes));
+}
+
+fn decodeIdentity(encoded: []const u8) !pa.Identity {
+    var value: pa.Identity = undefined;
+    if (try std.base64.standard.Decoder.calcSizeForSlice(encoded) != value.len) return error.InvalidIdentity;
+    try std.base64.standard.Decoder.decode(&value, encoded);
+    return value;
 }
 
 fn decodeBase64(allocator: std.mem.Allocator, encoded: []const u8) ![]u8 {
