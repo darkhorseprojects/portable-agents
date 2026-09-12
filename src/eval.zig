@@ -4,17 +4,21 @@ const capability = @import("capability.zig");
 const lua = @import("lua.zig");
 const runtime = @import("runtime.zig");
 
-pub fn install(root: *runtime.Runtime) void {
-    installOne(root);
-    for (root.imports) |*item| installOne(&item.runtime);
+pub fn install(owner: *runtime.Runtime) !void {
+    owner.state.pushFunction(zlua.wrap(installDispatch));
+    owner.state.pushLightUserdata(owner);
+    try lua.protect(owner.state, .{ .args = 1 });
+    for (owner.imports) |*item| try install(&item.runtime);
 }
 
-fn installOne(owner: *runtime.Runtime) void {
-    _ = owner.state.getGlobal("pa");
-    owner.state.pushLightUserdata(owner);
-    owner.state.pushClosure(zlua.wrap(dispatch), 1);
-    owner.state.setField(-2, "eval");
-    owner.state.pop(1);
+fn installDispatch(state: *zlua.Lua) !i32 {
+    const owner: *runtime.Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(1).?)));
+    _ = state.getGlobal("pa");
+    state.pushLightUserdata(owner);
+    state.pushClosure(zlua.wrap(dispatch), 1);
+    state.setField(-2, "eval");
+    state.pop(1);
+    return 0;
 }
 
 fn dispatch(state: *zlua.Lua) !i32 {
@@ -58,7 +62,7 @@ fn evaluate(source: *runtime.Runtime, code: []const u8, input: []const u8) anyer
     var owner: runtime.Runtime = undefined;
     try owner.clone(source);
     defer owner.deinit();
-    install(&owner);
+    try install(&owner);
     try owner.resolve();
     const allocator = owner.state.allocator();
     const exports = try capability.captureExports(allocator, owner.value);
@@ -75,31 +79,21 @@ fn run(owner: *runtime.Runtime, exports: []const capability.Export, source: []co
     defer state.deinit();
     var control = lua.Control{ .io = owner.control.io, .cancellation = owner.control.cancellation, .steps_left = owner.limits.steps };
     lua.attach(state, &control);
-    state.pushFunction(zlua.wrap(initialize));
-    try lua.protect(state, .{});
-    _ = state.getGlobal("package");
-    _ = state.getField(-1, "preload");
-    state.remove(-2);
-    const preload = state.absIndex(-1);
-    for (exports) |*item| {
-        _ = state.pushString(item.name);
-        capability.pushProxy(state, &item.value);
-        state.setTableRaw(preload);
-    }
-    for (owner.imports) |*item| {
-        _ = state.pushString(item.name);
-        capability.pushProxy(state, &item.runtime.value);
-        state.setTableRaw(preload);
-    }
-    state.pop(1);
-    state.loadBuffer(source, "eval", .text) catch return error.LuaFailure;
-    _ = state.pushString(input);
-    try lua.protect(state, .{ .args = 1, .results = 1 });
+    state.pushFunction(zlua.wrap(execute));
+    state.pushLightUserdata(owner);
+    state.pushLightUserdata(@ptrCast(&exports));
+    state.pushLightUserdata(@ptrCast(&source));
+    state.pushLightUserdata(@ptrCast(&input));
+    try lua.protect(state, .{ .args = 4, .results = 1 });
     if (owner.control.cancellation.canceled()) return error.Canceled;
     return owner.quota.child.dupe(u8, try lua.bytes(state, -1));
 }
 
-fn initialize(state: *zlua.Lua) !i32 {
+fn execute(state: *zlua.Lua) !i32 {
+    const owner: *runtime.Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(1).?)));
+    const exports: *const []const capability.Export = @ptrCast(@alignCast(state.toPointer(2).?));
+    const source: *const []const u8 = @ptrCast(@alignCast(state.toPointer(3).?));
+    const input: *const []const u8 = @ptrCast(@alignCast(state.toPointer(4).?));
     state.openBase();
     state.openMath();
     state.openString();
@@ -120,5 +114,23 @@ fn initialize(state: *zlua.Lua) !i32 {
         \\string.dump=nil
     , "eval runtime", .text);
     state.call(.{});
-    return 0;
+    _ = state.getGlobal("package");
+    _ = state.getField(-1, "preload");
+    state.remove(-2);
+    const preload = state.absIndex(-1);
+    for (exports.*) |*item| {
+        _ = state.pushString(item.name);
+        capability.pushProxy(state, &item.value);
+        state.setTableRaw(preload);
+    }
+    for (owner.imports) |*item| {
+        _ = state.pushString(item.name);
+        capability.pushProxy(state, &item.runtime.value);
+        state.setTableRaw(preload);
+    }
+    state.pop(1);
+    try state.loadBuffer(source.*, "eval", .text);
+    _ = state.pushString(input.*);
+    state.call(.{ .args = 1, .results = 1 });
+    return 1;
 }

@@ -29,10 +29,11 @@ pub const Resolved = struct {
     }
 
     pub fn call(self: Resolved, allocator: Allocator, input: []const u8) ![]u8 {
-        try self.lua.checkStack(2);
-        _ = self.lua.getIndexRaw(zlua.registry_index, self.reference);
-        _ = self.lua.pushString(input);
-        try lua_state.protect(self.lua, .{ .args = 1, .results = 1 });
+        try self.lua.checkStack(3);
+        self.lua.pushFunction(zlua.wrap(invoke));
+        self.lua.pushLightUserdata(&self);
+        self.lua.pushLightUserdata(@ptrCast(&input));
+        try lua_state.protect(self.lua, .{ .args = 2, .results = 1 });
         defer self.lua.pop(1);
         return allocator.dupe(u8, try lua_state.bytes(self.lua, -1));
     }
@@ -49,19 +50,11 @@ pub fn captureExports(allocator: Allocator, root: Resolved) ![]Export {
         for (values.items) |value| value.value.deinit();
         values.deinit(allocator);
     }
-    const top = root.lua.getTop();
-    defer root.lua.setTop(top);
-    _ = root.lua.getIndexRaw(zlua.registry_index, root.reference);
-    root.lua.pushNil();
-    while (root.lua.next(-2)) {
-        if (root.lua.typeOf(-2) != .string) return error.InvalidCapabilityExport;
-        const value = try Resolved.capture(root.lua, -1);
-        values.append(allocator, .{ .name = try root.lua.toString(-2), .value = value }) catch |err| {
-            value.deinit();
-            return err;
-        };
-        root.lua.pop(1);
-    }
+    root.lua.pushFunction(zlua.wrap(capture));
+    root.lua.pushLightUserdata(@ptrCast(&root));
+    root.lua.pushLightUserdata(@ptrCast(&values));
+    root.lua.pushLightUserdata(@ptrCast(&allocator));
+    try lua_state.protect(root.lua, .{ .args = 3 });
     return values.toOwnedSlice(allocator);
 }
 
@@ -142,4 +135,31 @@ fn callProxy(lua: *zlua.Lua) !i32 {
     defer lua.allocator().free(output);
     _ = lua.pushString(output);
     return 1;
+}
+
+fn invoke(lua: *zlua.Lua) !i32 {
+    const value: *const Resolved = @ptrCast(@alignCast(lua.toPointer(1).?));
+    const input: *const []const u8 = @ptrCast(@alignCast(lua.toPointer(2).?));
+    _ = lua.getIndexRaw(zlua.registry_index, value.reference);
+    _ = lua.pushString(input.*);
+    lua.call(.{ .args = 1, .results = 1 });
+    return 1;
+}
+
+fn capture(lua: *zlua.Lua) !i32 {
+    const root: *const Resolved = @ptrCast(@alignCast(lua.toPointer(1).?));
+    const values: *std.ArrayList(Export) = @ptrCast(@alignCast(@constCast(lua.toPointer(2).?)));
+    const allocator: *const Allocator = @ptrCast(@alignCast(lua.toPointer(3).?));
+    _ = lua.getIndexRaw(zlua.registry_index, root.reference);
+    lua.pushNil();
+    while (lua.next(-2)) {
+        if (lua.typeOf(-2) != .string) return error.InvalidCapabilityExport;
+        const value = try Resolved.capture(lua, -1);
+        values.append(allocator.*, .{ .name = try lua.toString(-2), .value = value }) catch |err| {
+            value.deinit();
+            return err;
+        };
+        lua.pop(1);
+    }
+    return 0;
 }

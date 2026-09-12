@@ -61,8 +61,9 @@ pub const Runtime = struct {
             try item.runtime.resolve();
             try self.addImport(item.name, &item.runtime.value);
         }
-        self.value = try self.resolveEntry();
-        self.resolved = true;
+        self.state.pushFunction(zlua.wrap(requireEntry));
+        self.state.pushLightUserdata(self);
+        try lua.protect(self.state, .{ .args = 1 });
     }
 
     pub fn call(self: *Runtime, input: []const u8) ![]u8 {
@@ -97,9 +98,9 @@ pub const Runtime = struct {
         self.state = try zlua.Lua.init(self.quota.allocator());
         errdefer self.state.deinit();
         lua.attach(self.state, &self.control);
+        self.state.pushFunction(zlua.wrap(initialize));
         self.state.pushLightUserdata(self);
-        self.state.pushClosure(zlua.wrap(initialize), 1);
-        try lua.protect(self.state, .{});
+        try lua.protect(self.state, .{ .args = 1 });
     }
 
     fn openFrom(self: *Runtime, source: *const Runtime) !void {
@@ -117,31 +118,15 @@ pub const Runtime = struct {
     }
 
     fn addImport(self: *Runtime, name: []const u8, value: *const capability.Resolved) !void {
-        _ = self.state.getField(zlua.registry_index, zlua.preload_table);
-        _ = self.state.pushString(name);
-        _ = self.state.getTableRaw(-2);
-        if (!self.state.isNil(-1)) {
-            self.state.pop(2);
-            return error.DuplicateImport;
-        }
-        self.state.pop(1);
-        _ = self.state.pushString(name);
-        capability.pushLoader(self.state, value);
-        self.state.setTableRaw(-3);
-        self.state.pop(1);
-    }
-
-    fn resolveEntry(self: *Runtime) !capability.Resolved {
-        _ = self.state.pushString(self.entry);
-        self.state.pushClosure(zlua.wrap(requireEntry), 1);
-        try lua.protect(self.state, .{ .results = 1 });
-        defer self.state.pop(1);
-        return capability.Resolved.capture(self.state, -1);
+        self.state.pushFunction(zlua.wrap(publishImport));
+        self.state.pushLightUserdata(@ptrCast(&name));
+        self.state.pushLightUserdata(value);
+        try lua.protect(self.state, .{ .args = 2 });
     }
 };
 
 fn initialize(state: *zlua.Lua) !i32 {
-    const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
+    const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(1).?)));
     state.openLibs();
     _ = state.getField(zlua.registry_index, zlua.preload_table);
     for (self.image.modules) |module| {
@@ -173,10 +158,27 @@ fn initialize(state: *zlua.Lua) !i32 {
     return 0;
 }
 
+fn publishImport(state: *zlua.Lua) !i32 {
+    const name: *const []const u8 = @ptrCast(@alignCast(state.toPointer(1).?));
+    const value: *const capability.Resolved = @ptrCast(@alignCast(state.toPointer(2).?));
+    _ = state.getField(zlua.registry_index, zlua.preload_table);
+    _ = state.pushString(name.*);
+    _ = state.getTableRaw(-2);
+    if (!state.isNil(-1)) return error.DuplicateImport;
+    state.pop(1);
+    _ = state.pushString(name.*);
+    capability.pushLoader(state, value);
+    state.setTableRaw(-3);
+    state.pop(1);
+    return 0;
+}
+
 fn requireEntry(state: *zlua.Lua) !i32 {
+    const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(1).?)));
     _ = state.getGlobal("require");
-    state.pushValue(zlua.Lua.upvalueIndex(1));
+    _ = state.pushString(self.entry);
     state.call(.{ .args = 1, .results = 1 });
-    _ = try capability.capabilityAgentId(state, -1);
-    return 1;
+    self.value = try capability.Resolved.capture(state, -1);
+    self.resolved = true;
+    return 0;
 }

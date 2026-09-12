@@ -43,7 +43,7 @@ pub const Agent = struct {
         var owner: runtime.Runtime = undefined;
         try owner.init(allocator, self, image_value, entry, imports, &cancellation);
         defer owner.deinit();
-        eval.install(&owner);
+        try eval.install(&owner);
         try owner.resolve();
         return owner.call(input);
     }
