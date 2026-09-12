@@ -1,9 +1,10 @@
 const std = @import("std");
 const zlua = @import("zlua");
+const runtime = @import("../runtime.zig");
 
-pub fn install(lua: *zlua.Lua, io: *const std.Io, canceled: *std.atomic.Value(bool)) void {
+pub fn install(lua: *zlua.Lua, io: *const std.Io, cancellation: *runtime.Cancellation) void {
     lua.pushLightUserdata(io);
-    lua.pushLightUserdata(canceled);
+    lua.pushLightUserdata(cancellation);
     lua.pushClosure(zlua.wrap(create), 2);
     lua.setField(-2, "process");
 }
@@ -22,11 +23,8 @@ fn create(lua: *zlua.Lua) !i32 {
 }
 
 fn run(lua: *zlua.Lua) !i32 {
-    const canceled: *std.atomic.Value(bool) = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(3)).?)));
-    return runValue(lua) catch |err| {
-        if (err == error.Canceled) canceled.store(true, .release);
-        return err;
-    };
+    const cancellation: *runtime.Cancellation = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(3)).?)));
+    return runtime.propagate(cancellation, runValue(lua));
 }
 
 fn runValue(lua: *zlua.Lua) !i32 {

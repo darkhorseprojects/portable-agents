@@ -1,31 +1,29 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const zlua = @import("zlua");
+const runtime = @import("../runtime.zig");
 
 const Root = struct {
     dir: std.Io.Dir,
     io: *const std.Io,
-    canceled: *std.atomic.Value(bool),
+    cancellation: *runtime.Cancellation,
     open: bool,
 };
 
-pub fn install(lua: *zlua.Lua, io: *const std.Io, canceled: *std.atomic.Value(bool)) !void {
+pub fn install(lua: *zlua.Lua, io: *const std.Io, cancellation: *runtime.Cancellation) !void {
     try lua.newMetatable("pa.fs.root");
     lua.pushFunction(zlua.wrap(close));
     lua.setField(-2, "__gc");
     lua.pop(1);
     lua.pushLightUserdata(io);
-    lua.pushLightUserdata(canceled);
+    lua.pushLightUserdata(cancellation);
     lua.pushClosure(zlua.wrap(create), 2);
     lua.setField(-2, "fs");
 }
 
 fn create(lua: *zlua.Lua) !i32 {
-    const canceled: *std.atomic.Value(bool) = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?)));
-    return createValue(lua) catch |err| {
-        if (err == error.Canceled) canceled.store(true, .release);
-        return err;
-    };
+    const cancellation: *runtime.Cancellation = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?)));
+    return runtime.propagate(cancellation, createValue(lua));
 }
 
 fn createValue(lua: *zlua.Lua) !i32 {
@@ -33,9 +31,9 @@ fn createValue(lua: *zlua.Lua) !i32 {
     const path = try lua.toString(1);
     if (std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidPath;
     const io: *const std.Io = @ptrCast(@alignCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?));
-    const canceled: *std.atomic.Value(bool) = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?)));
+    const cancellation: *runtime.Cancellation = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?)));
     const root = lua.newUserdata(Root, 0);
-    root.* = .{ .dir = undefined, .io = io, .canceled = canceled, .open = false };
+    root.* = .{ .dir = undefined, .io = io, .cancellation = cancellation, .open = false };
     lua.setMetatableRegistry("pa.fs.root");
     root.dir = try std.Io.Dir.cwd().openDir(io.*, path, .{});
     root.open = true;
@@ -59,10 +57,7 @@ fn close(lua: *zlua.Lua) i32 {
 
 fn read(lua: *zlua.Lua) !i32 {
     const root = try lua.toUserdata(Root, zlua.Lua.upvalueIndex(1));
-    return readValue(lua) catch |err| {
-        if (err == error.Canceled) root.canceled.store(true, .release);
-        return err;
-    };
+    return runtime.propagate(root.cancellation, readValue(lua));
 }
 
 fn readValue(lua: *zlua.Lua) !i32 {
@@ -86,10 +81,7 @@ fn readValue(lua: *zlua.Lua) !i32 {
 
 fn write(lua: *zlua.Lua) !i32 {
     const root = try lua.toUserdata(Root, zlua.Lua.upvalueIndex(1));
-    return writeValue(lua) catch |err| {
-        if (err == error.Canceled) root.canceled.store(true, .release);
-        return err;
-    };
+    return runtime.propagate(root.cancellation, writeValue(lua));
 }
 
 fn writeValue(lua: *zlua.Lua) !i32 {

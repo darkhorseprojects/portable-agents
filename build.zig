@@ -24,10 +24,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .strip = optimize != .Debug,
-            .imports = &.{
-                .{ .name = "pa", .module = pa },
-                .{ .name = "zlua", .module = zlua.module("zlua") },
-            },
+            .imports = &.{.{ .name = "pa", .module = pa }},
         }),
     });
     b.installArtifact(exe);
