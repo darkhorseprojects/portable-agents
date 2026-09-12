@@ -1,6 +1,6 @@
 const std = @import("std");
 const zlua = @import("zlua");
-const runtime = @import("../runtime.zig");
+const runtime = @import("../lua.zig");
 
 pub fn install(lua: *zlua.Lua, client: *std.http.Client, cancellation: *runtime.Cancellation) void {
     lua.pushLightUserdata(client);
@@ -65,8 +65,7 @@ fn requestValue(lua: *zlua.Lua) !i32 {
         if (body) |bytes| if (bytes.len != 0) return error.UnexpectedBody;
         try value.sendBodiless();
     }
-    var head_buffer: [4096]u8 = undefined;
-    var response = try value.receiveHead(&head_buffer);
+    var response = try value.receiveHead(&.{});
     var body_buffer: [8192]u8 = undefined;
     const data = try response.reader(&body_buffer).allocRemaining(lua.allocator(), .unlimited);
     defer lua.allocator().free(data);

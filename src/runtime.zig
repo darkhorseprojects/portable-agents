@@ -1,106 +1,182 @@
 const std = @import("std");
 const zlua = @import("zlua");
+const capability = @import("capability.zig");
+const host = @import("host.zig");
+const image = @import("image.zig");
+const lua = @import("lua.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const Limits = struct {
-    bytes: usize = 16 * 1024 * 1024,
-    steps: u64 = 2_000_000,
+pub const Imported = struct {
+    name: []const u8,
+    runtime: Runtime,
 };
 
-pub const Cancellation = struct {
-    value: std.atomic.Value(bool) = .init(false),
+pub const Runtime = struct {
+    limits: lua.Limits,
+    client: *std.http.Client,
+    image: *const image.Image,
+    entry: []const u8,
+    agent_id: *const capability.AgentId,
+    quota: lua.Quota,
+    control: lua.Control,
+    state: *zlua.Lua,
+    imports: []Imported,
+    value: capability.Resolved,
+    resolved: bool,
 
-    pub fn cancel(self: *Cancellation) void {
-        self.value.store(true, .release);
+    pub fn init(self: *Runtime, allocator: Allocator, agent: anytype, image_value: *const image.Image, entry: []const u8, imports: anytype, cancellation: *lua.Cancellation) !void {
+        for (imports, 0..) |item, index| {
+            for (imports[0..index]) |prior| if (std.mem.eql(u8, prior.name, item.name)) return error.DuplicateImport;
+        }
+        try self.open(allocator, agent.io, agent.limits, cancellation, &agent.client, image_value, entry, &agent.agent_id);
+        const storage = allocator.alloc(Imported, imports.len) catch |err| {
+            self.state.deinit();
+            return err;
+        };
+        errdefer self.abort(storage);
+        for (storage, imports, 0..) |*loaded, item, index| {
+            loaded.name = item.name;
+            try loaded.runtime.open(allocator, item.agent.io, item.agent.limits, cancellation, &item.agent.client, item.image, item.entry, &item.agent.agent_id);
+            self.imports = storage[0 .. index + 1];
+        }
     }
 
-    pub fn canceled(self: *const Cancellation) bool {
-        return self.value.load(.acquire);
+    pub fn clone(self: *Runtime, source: *const Runtime) !void {
+        try self.openFrom(source);
+        const storage = source.quota.child.alloc(Imported, source.imports.len) catch |err| {
+            self.state.deinit();
+            return err;
+        };
+        errdefer self.abort(storage);
+        for (storage, source.imports, 0..) |*loaded, existing, index| {
+            loaded.name = existing.name;
+            try loaded.runtime.openFrom(&existing.runtime);
+            self.imports = storage[0 .. index + 1];
+        }
+    }
+
+    pub fn resolve(self: *Runtime) !void {
+        for (self.imports) |*item| {
+            try item.runtime.resolve();
+            try self.addImport(item.name, &item.runtime.value);
+        }
+        self.value = try self.resolveEntry();
+        self.resolved = true;
+    }
+
+    pub fn call(self: *Runtime, input: []const u8) ![]u8 {
+        return lua.propagate(self.control.cancellation, self.value.call(self.quota.child, input));
+    }
+
+    pub fn deinit(self: *Runtime) void {
+        if (self.resolved) self.value.deinit();
+        self.state.deinit();
+        var index = self.imports.len;
+        while (index > 0) {
+            index -= 1;
+            self.imports[index].runtime.deinit();
+        }
+        self.quota.child.free(self.imports);
+    }
+
+    fn open(self: *Runtime, allocator: Allocator, io: std.Io, limits: lua.Limits, cancellation: *lua.Cancellation, client: *std.http.Client, image_value: *const image.Image, entry: []const u8, agent_id: *const capability.AgentId) !void {
+        self.* = .{
+            .limits = limits,
+            .client = client,
+            .image = image_value,
+            .entry = entry,
+            .agent_id = agent_id,
+            .quota = .{ .child = allocator, .limit = limits.bytes },
+            .control = .{ .io = io, .cancellation = cancellation, .steps_left = limits.steps },
+            .state = undefined,
+            .imports = &.{},
+            .value = undefined,
+            .resolved = false,
+        };
+        self.state = try zlua.Lua.init(self.quota.allocator());
+        errdefer self.state.deinit();
+        lua.attach(self.state, &self.control);
+        self.state.pushLightUserdata(self);
+        self.state.pushClosure(zlua.wrap(initialize), 1);
+        try lua.protect(self.state, .{});
+    }
+
+    fn openFrom(self: *Runtime, source: *const Runtime) !void {
+        try self.open(source.quota.child, source.control.io, source.limits, source.control.cancellation, source.client, source.image, source.entry, source.agent_id);
+    }
+
+    fn abort(self: *Runtime, storage: []Imported) void {
+        var index = self.imports.len;
+        while (index > 0) {
+            index -= 1;
+            self.imports[index].runtime.deinit();
+        }
+        self.quota.child.free(storage);
+        self.state.deinit();
+    }
+
+    fn addImport(self: *Runtime, name: []const u8, value: *const capability.Resolved) !void {
+        _ = self.state.getField(zlua.registry_index, zlua.preload_table);
+        _ = self.state.pushString(name);
+        _ = self.state.getTableRaw(-2);
+        if (!self.state.isNil(-1)) {
+            self.state.pop(2);
+            return error.DuplicateImport;
+        }
+        self.state.pop(1);
+        _ = self.state.pushString(name);
+        capability.pushLoader(self.state, value);
+        self.state.setTableRaw(-3);
+        self.state.pop(1);
+    }
+
+    fn resolveEntry(self: *Runtime) !capability.Resolved {
+        _ = self.state.pushString(self.entry);
+        self.state.pushClosure(zlua.wrap(requireEntry), 1);
+        try lua.protect(self.state, .{ .results = 1 });
+        defer self.state.pop(1);
+        return capability.Resolved.capture(self.state, -1);
     }
 };
 
-const QuotaAllocator = struct {
-    child: Allocator,
-    used: usize = 0,
-    limit: usize,
-
-    fn allocator(self: *QuotaAllocator) Allocator {
-        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = Allocator.noResize, .remap = remap, .free = free } };
+fn initialize(state: *zlua.Lua) !i32 {
+    const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
+    state.openLibs();
+    _ = state.getField(zlua.registry_index, zlua.preload_table);
+    for (self.image.modules) |module| {
+        try state.loadBuffer(module.bytecode, module.name, .binary);
+        state.setField(-2, module.name);
     }
-
-    fn alloc(pointer: *anyopaque, len: usize, alignment: std.mem.Alignment, address: usize) ?[*]u8 {
-        const self: *QuotaAllocator = @ptrCast(@alignCast(pointer));
-        if (len > self.limit -| self.used) return null;
-        const result = self.child.rawAlloc(len, alignment, address) orelse return null;
-        self.used += len;
-        return result;
-    }
-
-    fn remap(pointer: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, address: usize) ?[*]u8 {
-        const self: *QuotaAllocator = @ptrCast(@alignCast(pointer));
-        if (len > memory.len and len - memory.len > self.limit -| self.used) return null;
-        const result = self.child.rawRemap(memory, alignment, len, address) orelse return null;
-        if (len > memory.len) self.used += len - memory.len else self.used -= memory.len - len;
-        return result;
-    }
-
-    fn free(pointer: *anyopaque, memory: []u8, alignment: std.mem.Alignment, address: usize) void {
-        const self: *QuotaAllocator = @ptrCast(@alignCast(pointer));
-        self.child.rawFree(memory, alignment, address);
-        self.used -= memory.len;
-    }
-};
-
-pub const Vm = struct {
-    lua: *zlua.Lua,
-    quota: QuotaAllocator,
-    io: std.Io,
-    cancellation: *Cancellation,
-    owner: *anyopaque,
-    steps_left: u64,
-
-    pub fn init(self: *Vm, allocator: Allocator, io: std.Io, limits: Limits, cancellation: *Cancellation, context: *anyopaque) !void {
-        self.* = .{ .lua = undefined, .quota = .{ .child = allocator, .limit = limits.bytes }, .io = io, .cancellation = cancellation, .owner = context, .steps_left = limits.steps };
-        self.lua = try zlua.Lua.init(self.quota.allocator());
-        @as(**Vm, @ptrCast(@alignCast(self.lua.getExtraSpace().ptr))).* = self;
-        self.lua.setHook(zlua.wrap(hook), .{ .count = true }, 1000);
-    }
-
-    pub fn deinit(self: *Vm) void {
-        self.lua.deinit();
-    }
-
-    pub fn protect(self: *Vm, args: zlua.Lua.ProtectedCallArgs) !void {
-        self.lua.protectedCall(args) catch return if (self.cancellation.canceled()) error.Canceled else error.LuaFailure;
-    }
-};
-
-pub fn vm(lua: *zlua.Lua) *Vm {
-    return @as(**Vm, @ptrCast(@alignCast(lua.getExtraSpace().ptr))).*;
+    state.pop(1);
+    state.createTable(0, 6);
+    capability.pushMarkFunction(state, self.agent_id);
+    state.setField(-2, "_mark");
+    capability.pushAgentIdFunction(state);
+    state.setField(-2, "agentid");
+    try host.install(state, &self.control.io, self.client, self.control.cancellation);
+    state.setGlobal("pa");
+    try state.loadBuffer(
+        \\local mark,agentid,next,type,error,setmetatable=pa._mark,pa.agentid,next,type,error,setmetatable
+        \\local function capability(call,exports)
+        \\ if type(call)~="function" or exports~=nil and type(exports)~="table" then error("invalid capability",2) end
+        \\ local value={}
+        \\ for name,export in next,exports or {} do
+        \\  if type(name)~="string" then error("invalid capability export",2) end
+        \\  agentid(export) value[name]=export
+        \\ end
+        \\ return mark(setmetatable(value,{__call=function(_,...) return call(...) end,__metatable=false}))
+        \\end
+        \\pa.capability=capability pa._mark=nil
+    , "pa", .text);
+    state.call(.{});
+    return 0;
 }
 
-pub fn owner(comptime T: type, lua: *zlua.Lua) *T {
-    return @ptrCast(@alignCast(vm(lua).owner));
-}
-
-pub fn bytes(lua: *zlua.Lua, index: i32) ![]const u8 {
-    return if (lua.typeOf(index) == .string) lua.toString(index) else error.ExpectedBytes;
-}
-
-pub fn propagate(cancellation: *Cancellation, result: anytype) @TypeOf(result) {
-    return result catch |err| {
-        if (err == error.Canceled) cancellation.cancel();
-        return err;
-    };
-}
-
-fn hook(lua: *zlua.Lua, _: zlua.Event, _: *zlua.DebugInfo) void {
-    const self = vm(lua);
-    self.io.checkCancel() catch {
-        self.cancellation.cancel();
-        lua.raiseErrorStr("canceled", .{});
-    };
-    if (self.steps_left < 1000) lua.raiseErrorStr("step limit exceeded", .{});
-    self.steps_left -= 1000;
+fn requireEntry(state: *zlua.Lua) !i32 {
+    _ = state.getGlobal("require");
+    state.pushValue(zlua.Lua.upvalueIndex(1));
+    state.call(.{ .args = 1, .results = 1 });
+    _ = try capability.capabilityAgentId(state, -1);
+    return 1;
 }

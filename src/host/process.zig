@@ -1,6 +1,6 @@
 const std = @import("std");
 const zlua = @import("zlua");
-const runtime = @import("../runtime.zig");
+const runtime = @import("../lua.zig");
 
 pub fn install(lua: *zlua.Lua, io: *const std.Io, cancellation: *runtime.Cancellation) void {
     lua.pushLightUserdata(io);

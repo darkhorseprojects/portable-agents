@@ -1,136 +1,113 @@
 const std = @import("std");
 const zlua = @import("zlua");
 const capability = @import("capability.zig");
-const image = @import("image.zig");
-const package = @import("package.zig");
+const lua = @import("lua.zig");
 const runtime = @import("runtime.zig");
 
-const Allocator = std.mem.Allocator;
-
-pub const Evaluator = struct {
-    allocator: Allocator,
-    client: *std.http.Client,
-    limits: runtime.Limits,
-    image: *const image.Image,
-    target: package.Target,
-    self: capability.Capability,
-    grants: []const capability.Grant,
-    cancellation: *runtime.Cancellation,
-
-    pub fn install(self: *Evaluator, lua: *zlua.Lua) void {
-        _ = lua.getGlobal("pa");
-        lua.pushLightUserdata(self);
-        lua.pushClosure(zlua.wrap(dispatch), 1);
-        lua.setField(-2, "eval");
-        lua.pop(1);
-    }
-
-    fn dispatch(lua: *zlua.Lua) !i32 {
-        const self: *Evaluator = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?)));
-        const input = if (lua.getTop() >= 2) try runtime.bytes(lua, 2) else "";
-        if (lua.typeOf(1) == .string) {
-            const output = try self.evaluate(try runtime.bytes(lua, 1), input);
-            defer self.allocator.free(output);
-            _ = lua.pushString(output);
-            return 1;
-        }
-        if (lua.typeOf(1) != .table) return error.ExpectedEvalSource;
-        const count = std.math.cast(i32, lua.lenRaw(1)) orelse return error.TooManyEvalSources;
-        const futures = try self.allocator.alloc(std.Io.Future(anyerror![]u8), @intCast(count));
-        defer self.allocator.free(futures);
-        for (1..@as(usize, @intCast(count)) + 1) |index| {
-            _ = lua.getIndex(1, @intCast(index));
-            _ = try runtime.bytes(lua, -1);
-            lua.pop(1);
-        }
-        for (futures, 1..) |*future, index| {
-            _ = lua.getIndex(1, @intCast(index));
-            const source = runtime.bytes(lua, -1) catch unreachable;
-            future.* = self.client.io.async(evaluate, .{ self, source, input });
-            lua.pop(1);
-        }
-        for (futures) |*future| {
-            if (if (self.cancellation.canceled()) future.cancel(self.client.io) else future.await(self.client.io)) |_| {} else |err| {
-                if (err == error.Canceled) self.cancellation.cancel();
-            }
-        }
-        defer for (futures) |future| if (future.result) |output| self.allocator.free(output) else |_| {};
-        lua.createTable(count, 0);
-        for (futures, 1..) |future, index| {
-            _ = lua.pushString(try future.result);
-            lua.setIndex(-2, @intCast(index));
-        }
-        return 1;
-    }
-
-    fn evaluate(self: *Evaluator, source: []const u8, input: []const u8) anyerror![]u8 {
-        var private: package.Call = undefined;
-        try private.init(self.allocator, self.client, self.limits, self.image, self.target, self.self, self.cancellation);
-        defer private.deinit();
-        self.install(private.vm.lua);
-        const root = try private.resolve();
-        var offers: std.ArrayList(Offer) = .empty;
-        defer {
-            for (offers.items) |offer| offer.value.deinit();
-            offers.deinit(self.allocator);
-        }
-        var capture = Capture{ .allocator = self.allocator, .vm = &private.vm, .offers = &offers };
-        private.vm.lua.pushLightUserdata(&capture);
-        private.vm.lua.pushClosure(zlua.wrap(captureOffers), 1);
-        private.vm.lua.pushValue(root);
-        try private.vm.protect(.{ .args = 1 });
-        const grants = try self.allocator.alloc(capability.Grant, try std.math.add(usize, offers.items.len, self.grants.len));
-        defer self.allocator.free(grants);
-        for (offers.items, grants[0..offers.items.len]) |*offer, *grant| grant.* = .{ .name = offer.name, .capability = offer.value.capability() };
-        @memcpy(grants[offers.items.len..], self.grants);
-        for (grants, 0..) |grant, index| {
-            for (grants[0..index]) |prior| if (std.mem.eql(u8, prior.name, grant.name)) return error.DuplicateGrant;
-        }
-        var public = Public{ .vm = undefined, .grants = grants };
-        try public.vm.init(self.allocator, self.client.io, self.limits, self.cancellation, &public);
-        defer public.vm.deinit();
-        public.vm.lua.pushFunction(zlua.wrap(initialize));
-        try public.vm.protect(.{});
-        public.vm.lua.loadBuffer(source, "eval", .text) catch return error.LuaFailure;
-        _ = public.vm.lua.pushString(input);
-        try public.vm.protect(.{ .args = 1, .results = 1 });
-        if (self.cancellation.canceled()) return error.Canceled;
-        return self.allocator.dupe(u8, try runtime.bytes(public.vm.lua, -1));
-    }
-};
-
-const Offer = struct { name: []const u8, value: capability.LuaCapability };
-const Capture = struct { allocator: Allocator, vm: *runtime.Vm, offers: *std.ArrayList(Offer) };
-
-fn captureOffers(lua: *zlua.Lua) !i32 {
-    const capture: *Capture = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?)));
-    lua.pushNil();
-    while (lua.next(1)) {
-        if (lua.typeOf(-2) != .string) return error.InvalidCapabilityOffer;
-        const value = try capability.LuaCapability.capture(capture.vm, -1);
-        capture.offers.append(capture.allocator, .{ .name = try lua.toString(-2), .value = value }) catch |err| {
-            value.deinit();
-            return err;
-        };
-        lua.pop(1);
-    }
-    return 0;
+pub fn install(root: *runtime.Runtime) void {
+    installOne(root);
+    for (root.imports) |*item| installOne(&item.runtime);
 }
 
-const Public = struct {
-    vm: runtime.Vm,
-    grants: []const capability.Grant,
-};
+fn installOne(owner: *runtime.Runtime) void {
+    _ = owner.state.getGlobal("pa");
+    owner.state.pushLightUserdata(owner);
+    owner.state.pushClosure(zlua.wrap(dispatch), 1);
+    owner.state.setField(-2, "eval");
+    owner.state.pop(1);
+}
 
-fn initialize(lua: *zlua.Lua) !i32 {
-    lua.openBase();
-    lua.openMath();
-    lua.openString();
-    lua.openTable();
-    lua.openUtf8();
-    capability.pushAgentIdFunction(lua);
-    lua.setGlobal("agentid");
-    try lua.loadBuffer(
+fn dispatch(state: *zlua.Lua) !i32 {
+    const owner: *runtime.Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
+    const input = if (state.getTop() >= 2) try lua.bytes(state, 2) else "";
+    if (state.typeOf(1) == .string) {
+        const output = try evaluate(owner, try lua.bytes(state, 1), input);
+        defer owner.quota.child.free(output);
+        _ = state.pushString(output);
+        return 1;
+    }
+    if (state.typeOf(1) != .table) return error.ExpectedEvalSource;
+    const count = std.math.cast(i32, state.lenRaw(1)) orelse return error.TooManyEvalSources;
+    const futures = try state.allocator().alloc(std.Io.Future(anyerror![]u8), @intCast(count));
+    defer state.allocator().free(futures);
+    for (1..@as(usize, @intCast(count)) + 1) |index| {
+        _ = state.getIndex(1, @intCast(index));
+        _ = try lua.bytes(state, -1);
+        state.pop(1);
+    }
+    for (futures, 1..) |*future, index| {
+        _ = state.getIndex(1, @intCast(index));
+        future.* = owner.control.io.async(evaluate, .{ owner, lua.bytes(state, -1) catch unreachable, input });
+        state.pop(1);
+    }
+    for (futures) |*future| {
+        if (if (owner.control.cancellation.canceled()) future.cancel(owner.control.io) else future.await(owner.control.io)) |_| {} else |err| {
+            if (err == error.Canceled) owner.control.cancellation.cancel();
+        }
+    }
+    defer for (futures) |future| if (future.result) |output| owner.quota.child.free(output) else |_| {};
+    state.createTable(count, 0);
+    for (futures, 1..) |future, index| {
+        _ = state.pushString(try future.result);
+        state.setIndex(-2, @intCast(index));
+    }
+    return 1;
+}
+
+fn evaluate(source: *runtime.Runtime, code: []const u8, input: []const u8) anyerror![]u8 {
+    var owner: runtime.Runtime = undefined;
+    try owner.clone(source);
+    defer owner.deinit();
+    install(&owner);
+    try owner.resolve();
+    const allocator = owner.state.allocator();
+    const exports = try capability.captureExports(allocator, owner.value);
+    defer capability.freeExports(allocator, exports);
+    return run(&owner, exports, code, input);
+}
+
+fn run(owner: *runtime.Runtime, exports: []const capability.Export, source: []const u8, input: []const u8) ![]u8 {
+    for (exports) |left| for (owner.imports) |right| {
+        if (std.mem.eql(u8, left.name, right.name)) return error.DuplicateImport;
+    };
+    var quota = lua.Quota{ .child = owner.quota.child, .limit = owner.limits.bytes };
+    const state = try zlua.Lua.init(quota.allocator());
+    defer state.deinit();
+    var control = lua.Control{ .io = owner.control.io, .cancellation = owner.control.cancellation, .steps_left = owner.limits.steps };
+    lua.attach(state, &control);
+    state.pushFunction(zlua.wrap(initialize));
+    try lua.protect(state, .{});
+    _ = state.getGlobal("package");
+    _ = state.getField(-1, "preload");
+    state.remove(-2);
+    const preload = state.absIndex(-1);
+    for (exports) |*item| {
+        _ = state.pushString(item.name);
+        capability.pushProxy(state, &item.value);
+        state.setTableRaw(preload);
+    }
+    for (owner.imports) |*item| {
+        _ = state.pushString(item.name);
+        capability.pushProxy(state, &item.runtime.value);
+        state.setTableRaw(preload);
+    }
+    state.pop(1);
+    state.loadBuffer(source, "eval", .text) catch return error.LuaFailure;
+    _ = state.pushString(input);
+    try lua.protect(state, .{ .args = 1, .results = 1 });
+    if (owner.control.cancellation.canceled()) return error.Canceled;
+    return owner.quota.child.dupe(u8, try lua.bytes(state, -1));
+}
+
+fn initialize(state: *zlua.Lua) !i32 {
+    state.openBase();
+    state.openMath();
+    state.openString();
+    state.openTable();
+    state.openUtf8();
+    capability.pushAgentIdFunction(state);
+    state.setGlobal("agentid");
+    try state.loadBuffer(
         \\local preload,loaded={},{}
         \\package={preload=preload,loaded=loaded}
         \\function require(name)
@@ -142,16 +119,6 @@ fn initialize(lua: *zlua.Lua) !i32 {
         \\collectgarbage,dofile,getmetatable,load,loadfile,pcall,print,warn,xpcall=nil,nil,nil,nil,nil,nil,nil,nil,nil
         \\string.dump=nil
     , "eval runtime", .text);
-    lua.call(.{});
-    _ = lua.getGlobal("package");
-    _ = lua.getField(-1, "preload");
-    lua.remove(-2);
-    const preload = lua.absIndex(-1);
-    for (runtime.owner(Public, lua).grants) |*grant| {
-        _ = lua.pushString(grant.name);
-        capability.pushCapabilityProxy(lua, &grant.capability);
-        lua.setTableRaw(preload);
-    }
-    lua.pop(1);
+    state.call(.{});
     return 0;
 }

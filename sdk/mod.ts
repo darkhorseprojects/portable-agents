@@ -1,36 +1,19 @@
-import {
-  Crypto,
-  Effect,
-  Encoding,
-  Exit,
-  Queue,
-  Result,
-  Schema,
-  Stream,
-} from "effect";
+import { Crypto, Effect, Encoding, Result, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const maxRecordBytes = 64 * 1024 * 1024;
-const encoder = new TextEncoder();
 const fail = (code: string) => new AgentError({ code });
-const base64 = (value: string) =>
-  Result.getOrThrow(Encoding.decodeBase64(value));
-const line = (value: unknown) => {
-  const bytes = encoder.encode(`${JSON.stringify(value)}\n`);
-  if (bytes.length > maxRecordBytes) throw new Error("record too large");
-  return bytes;
-};
 
 type AgentEffect<A> = Effect.Effect<
   A,
   AgentError,
   ChildProcessSpawner.ChildProcessSpawner
 >;
-type Call = (input: Uint8Array) => AgentEffect<Uint8Array>;
 export type AgentId = Uint8Array;
-export type Target = Readonly<{ module: string; path?: readonly string[] }>;
-export type Capability = Readonly<{ agentId: AgentId; call: Call }>;
-export type Grant = Readonly<{ name: string; capability: Capability }>;
+export interface Import {
+  readonly name: string;
+  readonly agent: Agent;
+  readonly entry: string;
+}
 
 export interface AgentOptions {
   readonly binary?: string;
@@ -43,11 +26,10 @@ export interface AgentOptions {
 export interface Agent {
   readonly agentId: AgentId;
   readonly call: (
-    target: Target,
+    entry: string,
     input: Uint8Array,
-    grants?: readonly Grant[],
+    imports?: readonly Import[],
   ) => AgentEffect<Uint8Array>;
-  readonly bind: (target: Target, grants?: readonly Grant[]) => Capability;
 }
 
 export class AgentError extends Schema.TaggedError<AgentError>()("AgentError", {
@@ -55,10 +37,28 @@ export class AgentError extends Schema.TaggedError<AgentError>()("AgentError", {
 }) {}
 
 type Config = Required<AgentOptions>;
-type Message =
-  | { tag: "output"; value: Uint8Array }
-  | { tag: "failure"; code: string }
-  | { tag: "grant"; id: number; name: string; input: Uint8Array };
+type WireImport = {
+  name: string;
+  source: string;
+  agentId: string;
+  luaBytes: number;
+  luaSteps: string;
+  entry: string;
+};
+
+class AgentImpl implements Agent {
+  readonly agentId: AgentId;
+
+  constructor(readonly config: Config) {
+    this.agentId = config.agentId.slice();
+  }
+
+  readonly call = (
+    entry: string,
+    input: Uint8Array,
+    imports: readonly Import[] = [],
+  ) => call(this.config, entry, input, imports);
+}
 
 export const make = Effect.fn("Agent.make")(function* (options: AgentOptions) {
   const binary = options.binary ?? "agent";
@@ -76,73 +76,34 @@ export const make = Effect.fn("Agent.make")(function* (options: AgentOptions) {
       Effect.mapError(() => fail("AgentIdGenerationFailed")),
     );
   if (agentId.length !== 32) return yield* fail("InvalidAgentId");
-  const config: Config = {
+  return new AgentImpl({
     binary,
     source: options.source,
     agentId,
     luaBytes,
     luaSteps,
-  };
-  const callAgent = (
-    target: Target,
-    input: Uint8Array,
-    grants: readonly Grant[] = [],
-  ) => call(config, target, input, grants);
-  return {
-    agentId: agentId.slice(),
-    call: callAgent,
-    bind: (target, grants = []) => {
-      const boundTarget = {
-        module: target.module,
-        path: [...(target.path ?? [])],
-      };
-      const boundGrants = grants.map(({ name, capability }) => ({
-        name,
-        capability: {
-          agentId: capability.agentId.slice(),
-          call: capability.call,
-        },
-      }));
-      return {
-        agentId: agentId.slice(),
-        call: (input) => callAgent(boundTarget, input, boundGrants),
-      };
-    },
-  } satisfies Agent;
+  });
 });
 
 const call = Effect.fn("Agent.call")(
   function* (
     config: Config,
-    target: Target,
+    entry: string,
     input: Uint8Array,
-    grants: readonly Grant[],
+    imports: readonly Import[],
   ) {
-    const targets = new Map<string, Call>();
-    const wireGrants: Array<{ name: string; agentId: string }> = [];
-    for (const grant of grants) {
-      const { name, capability } = grant;
-      if (targets.has(name) || capability.agentId.length !== 32) {
-        return yield* fail("InvalidGrant");
-      }
-      targets.set(name, capability.call);
-      wireGrants.push({
-        name,
-        agentId: Encoding.encodeBase64(capability.agentId),
-      });
-    }
     const request = yield* Effect.try({
       try: () =>
-        line({
-          version: 1,
+        new TextEncoder().encode(JSON.stringify({
+          version: 2,
           agentId: Encoding.encodeBase64(config.agentId),
           luaBytes: config.luaBytes,
           luaSteps: config.luaSteps.toString(),
-          grants: wireGrants,
-          target: { module: target.module, path: [...(target.path ?? [])] },
+          imports: encodeImports(imports),
+          entry,
           input: Encoding.encodeBase64(input),
-        }),
-      catch: () => fail("RecordTooLarge"),
+        })),
+      catch: () => fail("InvalidImport"),
     });
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const handle = yield* spawner.spawn(ChildProcess.make(
@@ -150,57 +111,19 @@ const call = Effect.fn("Agent.call")(
       ["call", config.source],
       { stderr: "inherit" },
     ));
-    const outbound = yield* Queue.unbounded<Uint8Array>();
-    yield* Stream.fromQueue(outbound).pipe(
-      Stream.run(handle.stdin),
-      Effect.forkScoped,
-    );
-    yield* Queue.offer(outbound, request);
-    let final: Exclude<Message, { tag: "grant" }> | undefined;
-    yield* handle.stdout.pipe(
-      Stream.decodeText(),
-      Stream.splitLines,
-      Stream.runForEach((text) =>
-        Effect.gen(function* () {
-          const message = yield* Effect.try({
-            try: () => decodeMessage(text),
-            catch: () => fail("InvalidProtocol"),
-          });
-          if (final) return yield* fail("InvalidProtocol");
-          if (message.tag !== "grant") {
-            final = message;
-            return;
-          }
-          const target = targets.get(message.name);
-          if (!target) return yield* fail("InvalidProtocol");
-          yield* Effect.gen(function* () {
-            const result = yield* Effect.exit(target(message.input));
-            const reply = yield* Effect.try({
-              try: () =>
-                line({
-                  reply: Exit.isSuccess(result)
-                    ? {
-                      id: message.id,
-                      output: Encoding.encodeBase64(result.value),
-                    }
-                    : { id: message.id, error: "AgentFailure" },
-                }),
-              catch: () =>
-                line({ reply: { id: message.id, error: "AgentFailure" } }),
-            });
-            yield* Queue.offer(outbound, reply);
-          }).pipe(Effect.forkScoped);
-        })
-      ),
-    );
+    yield* Stream.make(request).pipe(Stream.run(handle.stdin));
+    const response = Array.from(
+      yield* handle.stdout.pipe(Stream.decodeText(), Stream.runCollect),
+    ).join("");
     if ((yield* handle.exitCode) !== ChildProcessSpawner.ExitCode(0)) {
       return yield* fail("ProcessFailure");
     }
-    if (!final) return yield* fail("MissingResult");
-    if (final.tag === "failure") {
-      return yield* fail(final.code || "AgentFailure");
-    }
-    return final.value;
+    const result = yield* Effect.try({
+      try: () => decodeResult(response),
+      catch: () => fail("InvalidProtocol"),
+    });
+    if ("error" in result) return yield* fail(result.error || "AgentFailure");
+    return result.output;
   },
   Effect.scoped,
   Effect.mapError((error) =>
@@ -208,27 +131,30 @@ const call = Effect.fn("Agent.call")(
   ),
 );
 
-function decodeMessage(text: string): Message {
-  const value = JSON.parse(text);
-  if (Object.keys(value).length !== 1) throw new Error("invalid message");
-  const { result, grant } = value;
-  if (result && Object.keys(result).length !== 1) throw new Error("protocol");
-  if (result && typeof result.output === "string") {
-    return { tag: "output", value: base64(result.output) };
+function encodeImports(imports: readonly Import[]): WireImport[] {
+  return imports.map((value) => {
+    if (!(value.agent instanceof AgentImpl)) throw new Error("invalid import");
+    const config = value.agent.config;
+    return {
+      name: value.name,
+      source: config.source,
+      agentId: Encoding.encodeBase64(config.agentId),
+      luaBytes: config.luaBytes,
+      luaSteps: config.luaSteps.toString(),
+      entry: value.entry,
+    };
+  });
+}
+
+function decodeResult(
+  text: string,
+): { output: Uint8Array } | { error: string } {
+  const result = JSON.parse(text)?.result;
+  if (typeof result?.output === "string") {
+    return {
+      output: Result.getOrThrow(Encoding.decodeBase64(result.output)),
+    };
   }
-  if (result && typeof result.error === "string") {
-    return { tag: "failure", code: result.error };
-  }
-  if (
-    !grant || Object.keys(grant).length !== 3 ||
-    !Number.isSafeInteger(grant.id) || grant.id <= 0 ||
-    grant.id > 0xffff_ffff || typeof grant.name !== "string" ||
-    typeof grant.input !== "string"
-  ) throw new Error("invalid message");
-  return {
-    tag: "grant",
-    id: grant.id,
-    name: grant.name,
-    input: base64(grant.input),
-  };
+  if (typeof result.error === "string") return { error: result.error };
+  throw new Error("invalid protocol");
 }

@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const zlua = @import("zlua");
-const runtime = @import("../runtime.zig");
+const runtime = @import("../lua.zig");
 
 const Root = struct {
     dir: std.Io.Dir,
@@ -89,7 +89,13 @@ fn writeValue(lua: *zlua.Lua) !i32 {
     if (!root.open or lua.typeOf(1) != .string or lua.typeOf(2) != .string) return error.ExpectedBytes;
     var parent = try openParent(root, try lua.toString(1));
     defer if (parent.close) parent.dir.close(root.io.*);
-    var atomic = try parent.dir.createFileAtomic(root.io.*, parent.name, .{ .replace = true });
+    const permissions = if (parent.dir.statFile(root.io.*, parent.name, .{ .follow_symlinks = false })) |stat|
+        stat.permissions
+    else |err| switch (err) {
+        error.FileNotFound => if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(0o600),
+        else => return err,
+    };
+    var atomic = try parent.dir.createFileAtomic(root.io.*, parent.name, .{ .replace = true, .permissions = permissions });
     defer atomic.deinit(root.io.*);
     try atomic.file.writeStreamingAll(root.io.*, try lua.toString(2));
     try atomic.file.sync(root.io.*);
