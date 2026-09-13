@@ -1,11 +1,10 @@
 const std = @import("std");
 const zlua = @import("zlua");
-const runtime = @import("../lua.zig");
+const lua_state = @import("../lua.zig");
 
-pub fn install(lua: *zlua.Lua, client: *std.http.Client, cancellation: *runtime.Cancellation) void {
+pub fn install(lua: *zlua.Lua, client: *std.http.Client) void {
     lua.pushLightUserdata(client);
-    lua.pushLightUserdata(cancellation);
-    lua.pushClosure(zlua.wrap(create), 2);
+    lua.pushClosure(zlua.wrap(create), 1);
     lua.setField(-2, "http");
 }
 
@@ -23,21 +22,19 @@ fn create(lua: *zlua.Lua) !i32 {
     lua.createTable(0, 1);
     lua.pushValue(1);
     lua.pushValue(zlua.Lua.upvalueIndex(1));
-    lua.pushValue(zlua.Lua.upvalueIndex(2));
-    lua.pushClosure(zlua.wrap(request), 3);
+    lua.pushClosure(zlua.wrap(request), 2);
     lua.setField(-2, "request");
     return 1;
 }
 
 fn request(lua: *zlua.Lua) !i32 {
-    const cancellation: *runtime.Cancellation = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(3)).?)));
-    return runtime.propagate(cancellation, requestValue(lua));
+    return lua_state.propagate(lua_state.control(lua).cancellation, requestValue(lua));
 }
 
 fn requestValue(lua: *zlua.Lua) !i32 {
     if (lua.typeOf(1) != .string or lua.typeOf(2) != .string or
-        (lua.getTop() >= 3 and !lua.isNil(3) and lua.typeOf(3) != .string) or
-        (lua.getTop() >= 4 and !lua.isNil(4) and lua.typeOf(4) != .table))
+        (!lua.isNoneOrNil(3) and lua.typeOf(3) != .string) or
+        (!lua.isNoneOrNil(4) and lua.typeOf(4) != .table))
     {
         return error.InvalidRequest;
     }
@@ -58,7 +55,7 @@ fn requestValue(lua: *zlua.Lua) !i32 {
         .extra_headers = extra orelse &.{},
     });
     defer value.deinit();
-    const body = if (lua.getTop() >= 3 and !lua.isNil(3)) try lua.toString(3) else null;
+    const body = if (lua.isNoneOrNil(3)) null else try lua.toString(3);
     if (method.requestHasBody()) {
         try value.sendBodyComplete(@constCast(body orelse ""));
     } else {
@@ -75,7 +72,7 @@ fn requestValue(lua: *zlua.Lua) !i32 {
 }
 
 fn requestHeaders(lua: *zlua.Lua, index: i32) !?[]std.http.Header {
-    if (lua.getTop() < index or lua.isNil(index)) return null;
+    if (lua.isNoneOrNil(index)) return null;
     var headers: std.ArrayList(std.http.Header) = .empty;
     errdefer headers.deinit(lua.allocator());
     lua.pushNil();

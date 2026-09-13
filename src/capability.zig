@@ -63,13 +63,13 @@ pub fn freeExports(allocator: Allocator, values: []Export) void {
     allocator.free(values);
 }
 
-pub fn markCapability(lua: *zlua.Lua, metatable: i32, agent_id: AgentId) void {
+fn markCapability(lua: *zlua.Lua, metatable: i32, agent_id: AgentId) void {
     const table = lua.absIndex(metatable);
     _ = lua.pushString(&agent_id);
     lua.setPtrRaw(table, &marker);
 }
 
-pub fn capabilityAgentId(lua: *zlua.Lua, index: i32) !AgentId {
+fn capabilityAgentId(lua: *zlua.Lua, index: i32) !AgentId {
     lua.getMetatable(index) catch return error.ExpectedCapability;
     defer lua.pop(1);
     if (lua.getPtrRaw(-1, &marker) != .string) {

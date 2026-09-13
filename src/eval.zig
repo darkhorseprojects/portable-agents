@@ -65,15 +65,12 @@ fn evaluate(source: *runtime.Runtime, code: []const u8, input: []const u8) anyer
     try install(&owner);
     try owner.resolve();
     const allocator = owner.state.allocator();
-    const exports = try capability.captureExports(allocator, owner.value);
+    const exports = try capability.captureExports(allocator, owner.value.?);
     defer capability.freeExports(allocator, exports);
     return run(&owner, exports, code, input);
 }
 
 fn run(owner: *runtime.Runtime, exports: []const capability.Export, source: []const u8, input: []const u8) ![]u8 {
-    for (exports) |left| for (owner.imports) |right| {
-        if (std.mem.eql(u8, left.name, right.name)) return error.DuplicateImport;
-    };
     var quota = lua.Quota{ .child = owner.quota.child, .limit = owner.limits.bytes };
     const state = try zlua.Lua.init(quota.allocator());
     defer state.deinit();
@@ -101,33 +98,36 @@ fn execute(state: *zlua.Lua) !i32 {
     state.openUtf8();
     capability.pushAgentIdFunction(state);
     state.setGlobal("agentid");
-    try state.loadBuffer(
-        \\local preload,loaded={},{}
-        \\package={preload=preload,loaded=loaded}
-        \\function require(name)
-        \\ if type(name)~="string" then error("invalid module name",2) end
-        \\ local value=loaded[name]
-        \\ if value==nil then value=preload[name] if value==nil then error("module not found: "..tostring(name),2) end loaded[name]=value end
-        \\ return value
-        \\end
-        \\collectgarbage,dofile,getmetatable,load,loadfile,pcall,print,warn,xpcall=nil,nil,nil,nil,nil,nil,nil,nil,nil
-        \\string.dump=nil
-    , "eval runtime", .text);
-    state.call(.{});
-    _ = state.getGlobal("package");
-    _ = state.getField(-1, "preload");
-    state.remove(-2);
-    const preload = state.absIndex(-1);
+    state.createTable(0, @intCast(exports.*.len + owner.imports.len));
+    const capabilities = state.absIndex(-1);
     for (exports.*) |*item| {
         _ = state.pushString(item.name);
         capability.pushProxy(state, &item.value);
-        state.setTableRaw(preload);
+        state.setTableRaw(capabilities);
     }
     for (owner.imports) |*item| {
         _ = state.pushString(item.name);
-        capability.pushProxy(state, &item.runtime.value);
-        state.setTableRaw(preload);
+        _ = state.getTableRaw(capabilities);
+        if (!state.isNil(-1)) return error.DuplicateImport;
+        state.pop(1);
+        _ = state.pushString(item.name);
+        capability.pushProxy(state, &item.runtime.value.?);
+        state.setTableRaw(capabilities);
     }
+    try state.loadBuffer(
+        \\local capabilities=...
+        \\collectgarbage,dofile,getmetatable,load,loadfile,pcall,print,warn,xpcall=nil,nil,nil,nil,nil,nil,nil,nil,nil
+        \\string.dump=nil
+        \\return function(name)
+        \\ if type(name)~="string" then error("invalid module name",2) end
+        \\ local value=capabilities[name]
+        \\ if value==nil then error("module not found: "..tostring(name),2) end
+        \\ return value
+        \\end
+    , "eval runtime", .text);
+    state.pushValue(capabilities);
+    state.call(.{ .args = 1, .results = 1 });
+    state.setGlobal("require");
     state.pop(1);
     try state.loadBuffer(source.*, "eval", .text);
     _ = state.pushString(input.*);

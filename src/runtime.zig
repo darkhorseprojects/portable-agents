@@ -7,7 +7,7 @@ const lua = @import("lua.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const Imported = struct {
+const Imported = struct {
     name: []const u8,
     runtime: Runtime,
 };
@@ -22,8 +22,7 @@ pub const Runtime = struct {
     control: lua.Control,
     state: *zlua.Lua,
     imports: []Imported,
-    value: capability.Resolved,
-    resolved: bool,
+    value: ?capability.Resolved,
 
     pub fn init(self: *Runtime, allocator: Allocator, agent: anytype, image_value: *const image.Image, entry: []const u8, imports: anytype, cancellation: *lua.Cancellation) !void {
         for (imports, 0..) |item, index| {
@@ -59,7 +58,7 @@ pub const Runtime = struct {
     pub fn resolve(self: *Runtime) !void {
         for (self.imports) |*item| {
             try item.runtime.resolve();
-            try self.addImport(item.name, &item.runtime.value);
+            try self.addImport(item.name, &item.runtime.value.?);
         }
         self.state.pushFunction(zlua.wrap(requireEntry));
         self.state.pushLightUserdata(self);
@@ -67,11 +66,11 @@ pub const Runtime = struct {
     }
 
     pub fn call(self: *Runtime, input: []const u8) ![]u8 {
-        return lua.propagate(self.control.cancellation, self.value.call(self.quota.child, input));
+        return lua.propagate(self.control.cancellation, self.value.?.call(self.quota.child, input));
     }
 
     pub fn deinit(self: *Runtime) void {
-        if (self.resolved) self.value.deinit();
+        if (self.value) |value| value.deinit();
         self.state.deinit();
         var index = self.imports.len;
         while (index > 0) {
@@ -92,8 +91,7 @@ pub const Runtime = struct {
             .control = .{ .io = io, .cancellation = cancellation, .steps_left = limits.steps },
             .state = undefined,
             .imports = &.{},
-            .value = undefined,
-            .resolved = false,
+            .value = null,
         };
         self.state = try zlua.Lua.init(self.quota.allocator());
         errdefer self.state.deinit();
@@ -139,7 +137,7 @@ fn initialize(state: *zlua.Lua) !i32 {
     state.setField(-2, "_mark");
     capability.pushAgentIdFunction(state);
     state.setField(-2, "agentid");
-    try host.install(state, &self.control.io, self.client, self.control.cancellation);
+    try host.install(state, self.client);
     state.setGlobal("pa");
     try state.loadBuffer(
         \\local mark,agentid,next,type,error,setmetatable=pa._mark,pa.agentid,next,type,error,setmetatable
@@ -179,6 +177,5 @@ fn requireEntry(state: *zlua.Lua) !i32 {
     _ = state.pushString(self.entry);
     state.call(.{ .args = 1, .results = 1 });
     self.value = try capability.Resolved.capture(state, -1);
-    self.resolved = true;
     return 0;
 }

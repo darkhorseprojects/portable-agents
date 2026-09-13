@@ -3,11 +3,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const fail = (code: string) => new AgentError({ code });
 
-type AgentEffect<A> = Effect.Effect<
-  A,
-  AgentError,
-  ChildProcessSpawner.ChildProcessSpawner
->;
 export type AgentId = Uint8Array;
 export interface Import {
   readonly name: string;
@@ -29,45 +24,61 @@ export interface Agent {
     entry: string,
     input: Uint8Array,
     imports?: readonly Import[],
-  ) => AgentEffect<Uint8Array>;
+  ) => Effect.Effect<
+    Uint8Array,
+    AgentError,
+    ChildProcessSpawner.ChildProcessSpawner
+  >;
 }
 
 export class AgentError extends Schema.TaggedError<AgentError>()("AgentError", {
   code: Schema.String,
 }) {}
 
-type Config = Required<AgentOptions>;
-type WireImport = {
-  name: string;
+type Config = {
+  readonly binary: string;
+  readonly source: string;
+  readonly agentId: AgentId;
+  readonly luaBytes?: number;
+  readonly luaSteps?: bigint;
+};
+type WireAgent = {
   source: string;
   agentId: string;
-  luaBytes: number;
-  luaSteps: string;
-  entry: string;
+  limits: { bytes?: number; steps?: string };
 };
+type WireImport = { name: string; agent: number; entry: string };
 
 class AgentImpl implements Agent {
   readonly agentId: AgentId;
+  readonly #config: Config;
 
-  constructor(readonly config: Config) {
+  constructor(config: Config) {
+    this.#config = config;
     this.agentId = config.agentId.slice();
+  }
+
+  static config(agent: Agent): Config {
+    if (!(agent instanceof AgentImpl)) throw new Error("invalid import");
+    return agent.#config;
   }
 
   readonly call = (
     entry: string,
     input: Uint8Array,
     imports: readonly Import[] = [],
-  ) => call(this.config, entry, input, imports);
+  ) => call(this, entry, input, imports);
 }
 
 export const make = Effect.fn("Agent.make")(function* (options: AgentOptions) {
   const binary = options.binary ?? "agent";
-  const luaBytes = options.luaBytes ?? 16 * 1024 * 1024;
-  const luaSteps = options.luaSteps ?? 2_000_000n;
   if (
-    !binary || !options.source || !Number.isSafeInteger(luaBytes) ||
-    luaBytes < 0 || typeof luaSteps !== "bigint" || luaSteps < 0n ||
-    luaSteps > 0xffff_ffff_ffff_ffffn
+    !binary || !options.source ||
+    (options.luaBytes !== undefined &&
+      (!Number.isSafeInteger(options.luaBytes) || options.luaBytes < 0)) ||
+    (options.luaSteps !== undefined &&
+      (typeof options.luaSteps !== "bigint" || options.luaSteps < 0n ||
+        options.luaSteps > 0xffff_ffff_ffff_ffffn))
   ) return yield* fail("InvalidOptions");
   const agentId = options.agentId
     ? new Uint8Array(options.agentId)
@@ -76,39 +87,41 @@ export const make = Effect.fn("Agent.make")(function* (options: AgentOptions) {
       Effect.mapError(() => fail("AgentIdGenerationFailed")),
     );
   if (agentId.length !== 32) return yield* fail("InvalidAgentId");
-  return new AgentImpl({
+  const agent: Agent = new AgentImpl({
     binary,
     source: options.source,
     agentId,
-    luaBytes,
-    luaSteps,
+    luaBytes: options.luaBytes,
+    luaSteps: options.luaSteps,
   });
+  return agent;
 });
 
 const call = Effect.fn("Agent.call")(
   function* (
-    config: Config,
+    agent: AgentImpl,
     entry: string,
     input: Uint8Array,
     imports: readonly Import[],
   ) {
+    const config = AgentImpl.config(agent);
     const request = yield* Effect.try({
-      try: () =>
-        new TextEncoder().encode(JSON.stringify({
-          version: 2,
-          agentId: Encoding.encodeBase64(config.agentId),
-          luaBytes: config.luaBytes,
-          luaSteps: config.luaSteps.toString(),
-          imports: encodeImports(imports),
+      try: () => {
+        const encoded = encodeAgents(agent, imports);
+        return new TextEncoder().encode(JSON.stringify({
+          version: 3,
+          agents: encoded.agents,
+          imports: encoded.imports,
           entry,
           input: Encoding.encodeBase64(input),
-        })),
+        }));
+      },
       catch: () => fail("InvalidImport"),
     });
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const handle = yield* spawner.spawn(ChildProcess.make(
       config.binary,
-      ["call", config.source],
+      ["call"],
       { stderr: "inherit" },
     ));
     yield* Stream.make(request).pipe(Stream.run(handle.stdin));
@@ -131,19 +144,35 @@ const call = Effect.fn("Agent.call")(
   ),
 );
 
-function encodeImports(imports: readonly Import[]): WireImport[] {
-  return imports.map((value) => {
-    if (!(value.agent instanceof AgentImpl)) throw new Error("invalid import");
-    const config = value.agent.config;
-    return {
-      name: value.name,
+function encodeAgents(
+  root: AgentImpl,
+  values: readonly Import[],
+): { agents: WireAgent[]; imports: WireImport[] } {
+  const agents: WireAgent[] = [];
+  const indices = new Map<Agent, number>();
+  const add = (agent: Agent) => {
+    const existing = indices.get(agent);
+    if (existing !== undefined) return existing;
+    const config = AgentImpl.config(agent);
+    const index = agents.length;
+    indices.set(agent, index);
+    agents.push({
       source: config.source,
       agentId: Encoding.encodeBase64(config.agentId),
-      luaBytes: config.luaBytes,
-      luaSteps: config.luaSteps.toString(),
-      entry: value.entry,
-    };
-  });
+      limits: {
+        bytes: config.luaBytes,
+        steps: config.luaSteps?.toString(),
+      },
+    });
+    return index;
+  };
+  add(root);
+  const imports = values.map((value) => ({
+    name: value.name,
+    agent: add(value.agent),
+    entry: value.entry,
+  }));
+  return { agents, imports };
 }
 
 function decodeResult(

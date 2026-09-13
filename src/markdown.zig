@@ -113,17 +113,15 @@ fn emitList(out: *Writer, lines: *Lines, first_line: []const u8) !void {
 }
 
 fn emitTable(out: *Writer, lines: *Lines, first_line: []const u8) !bool {
-    const header = trim(first_line);
     var rest = lines.*;
     const separator = rest.next() orelse return false;
-    const count = tableColumns(header, trim(separator)) orelse return false;
+    const count = tableColumns(first_line, separator) orelse return false;
     lines.* = rest;
-    var names = tableCells(header).?;
     try out.writeAll("add({");
     while (peek(lines.*)) |line| {
         var values = tableCells(line) orelse break;
         _ = lines.next();
-        names = tableCells(header).?;
+        var names = tableCells(first_line).?;
         try out.writeByte('{');
         var columns: usize = 0;
         while (values.next()) |value| {

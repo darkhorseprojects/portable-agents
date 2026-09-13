@@ -1,11 +1,9 @@
 const std = @import("std");
 const zlua = @import("zlua");
-const runtime = @import("../lua.zig");
+const lua_state = @import("../lua.zig");
 
-pub fn install(lua: *zlua.Lua, io: *const std.Io, cancellation: *runtime.Cancellation) void {
-    lua.pushLightUserdata(io);
-    lua.pushLightUserdata(cancellation);
-    lua.pushClosure(zlua.wrap(create), 2);
+pub fn install(lua: *zlua.Lua) void {
+    lua.pushFunction(zlua.wrap(create));
     lua.setField(-2, "process");
 }
 
@@ -15,20 +13,17 @@ fn create(lua: *zlua.Lua) !i32 {
     if (!std.fs.path.isAbsolute(executable) or std.mem.indexOfScalar(u8, executable, 0) != null) return error.ExpectedAbsolutePath;
     lua.createTable(0, 1);
     lua.pushValue(1);
-    lua.pushValue(zlua.Lua.upvalueIndex(1));
-    lua.pushValue(zlua.Lua.upvalueIndex(2));
-    lua.pushClosure(zlua.wrap(run), 3);
+    lua.pushClosure(zlua.wrap(run), 1);
     lua.setField(-2, "run");
     return 1;
 }
 
 fn run(lua: *zlua.Lua) !i32 {
-    const cancellation: *runtime.Cancellation = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(3)).?)));
-    return runtime.propagate(cancellation, runValue(lua));
+    return lua_state.propagate(lua_state.control(lua).cancellation, runValue(lua));
 }
 
 fn runValue(lua: *zlua.Lua) !i32 {
-    if (lua.typeOf(1) != .table or (lua.getTop() >= 2 and !lua.isNil(2) and lua.typeOf(2) != .string)) return error.InvalidProcessCall;
+    if (lua.typeOf(1) != .table or (!lua.isNoneOrNil(2) and lua.typeOf(2) != .string)) return error.InvalidProcessCall;
     const count = try denseLength(lua, 1);
     const argv = try lua.allocator().alloc([]const u8, try std.math.add(usize, count, 1));
     defer lua.allocator().free(argv);
@@ -39,27 +34,27 @@ fn runValue(lua: *zlua.Lua) !i32 {
         if (std.mem.indexOfScalar(u8, argument.*, 0) != null) return error.ExpectedArgv;
         lua.pop(1);
     }
-    const io: *const std.Io = @ptrCast(@alignCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?));
-    var child = try std.process.spawn(io.*, .{
+    const io = lua_state.control(lua).io;
+    var child = try std.process.spawn(io, .{
         .argv = argv,
         .stdin = .pipe,
         .stdout = .pipe,
         .stderr = .pipe,
     });
-    defer child.kill(io.*);
+    defer child.kill(io);
     const input_file = child.stdin.?;
     child.stdin = null;
-    const input = if (lua.getTop() >= 2 and !lua.isNil(2)) try lua.toString(2) else "";
-    var sender = try io.concurrent(sendInput, .{ input_file, io.*, input });
-    defer _ = sender.cancel(io.*) catch {};
+    const input = if (lua.isNoneOrNil(2)) "" else try lua.toString(2);
+    var sender = try io.concurrent(sendInput, .{ input_file, io, input });
+    defer _ = sender.cancel(io) catch {};
     var storage: std.Io.File.MultiReader.Buffer(2) = undefined;
     var outputs: std.Io.File.MultiReader = undefined;
-    outputs.init(lua.allocator(), io.*, storage.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    outputs.init(lua.allocator(), io, storage.toStreams(), &.{ child.stdout.?, child.stderr.? });
     defer outputs.deinit();
     try outputs.fillRemaining(.none);
     try outputs.checkAnyError();
-    try sender.await(io.*);
-    const term = try child.wait(io.*);
+    try sender.await(io);
+    const term = try child.wait(io);
     const stdout = try outputs.toOwnedSlice(0);
     defer lua.allocator().free(stdout);
     const stderr = try outputs.toOwnedSlice(1);

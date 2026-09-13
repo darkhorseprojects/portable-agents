@@ -31,8 +31,10 @@ pub const Image = struct {
         defer compiler.deinit();
         var modules: std.ArrayList(Module) = .empty;
         while (try walker.next(io)) |entry| {
-            if (entry.kind != .file or
-                (!std.mem.endsWith(u8, entry.path, ".lua") and !std.mem.endsWith(u8, entry.path, ".md"))) continue;
+            if (entry.kind != .file) continue;
+            const extension_index = std.mem.lastIndexOfScalar(u8, entry.path, '.') orelse continue;
+            const suffix = entry.path[extension_index..];
+            if (!std.mem.eql(u8, suffix, ".lua") and !std.mem.eql(u8, suffix, ".md")) continue;
             const file = try directory.openFile(io, entry.path, .{
                 .allow_directory = false,
                 .follow_symlinks = false,
@@ -42,11 +44,10 @@ pub const Image = struct {
             var reader = file.reader(io, &.{});
             const bytes = try reader.interface.allocRemaining(allocator, .unlimited);
             defer allocator.free(bytes);
-            const is_markdown = std.mem.endsWith(u8, entry.path, ".md");
+            const is_markdown = std.mem.eql(u8, suffix, ".md");
             const source_bytes = if (is_markdown) try markdown.translate(allocator, bytes) else bytes;
             defer if (is_markdown) allocator.free(source_bytes);
-            const extension = std.mem.lastIndexOfScalar(u8, entry.path, '.').?;
-            const name = try output.dupeZ(u8, entry.path[0..extension]);
+            const name = try output.dupeZ(u8, entry.path[0..extension_index]);
             for (name) |*byte| {
                 if (byte.* == '/' or byte.* == '\\') byte.* = '.';
             }
