@@ -17,15 +17,16 @@ pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
     defer script.deinit();
     const out = &output.writer;
     try out.writeAll(
-        \\local function section(parent,name)
-        \\ local value=parent[name]
-        \\ if value==nil then value={} parent[name]=value end
-        \\ return value
-        \\end
-        \\local document={}
-        \\local current=document
-        \\local s1,s2,s3,s4,s5,s6
-        \\local function add(value) current[#current+1]=value end
+        \\local function document()
+        \\ local function section(parent,name)
+        \\  local value=parent[name]
+        \\  if value==nil then value={} parent[name]=value end
+        \\  return value
+        \\ end
+        \\ local root={}
+        \\ local current=root
+        \\ local s1,s2,s3,s4,s5,s6
+        \\ local function add(value) current[#current+1]=value end
         \\
     );
     var lines = std.mem.splitScalar(u8, source, '\n');
@@ -45,7 +46,8 @@ pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
             try emitText(out, &lines, line);
         }
     }
-    if (has_lua) try out.writeAll(script.written()) else try out.writeAll("return document\n");
+    try out.writeAll("return root\nend\n");
+    if (has_lua) try out.writeAll(script.written()) else try out.writeAll("return document()\n");
     return output.toOwnedSlice();
 }
 
@@ -81,7 +83,7 @@ fn emitHeading(out: *Writer, level: usize, text: []const u8, active: *[6]bool) !
     @memset(active[level - 1 ..], false);
     active[level - 1] = true;
     try out.print("s{d}=section(", .{level});
-    if (parent == 0) try out.writeAll("document") else try out.print("s{d}", .{parent});
+    if (parent == 0) try out.writeAll("root") else try out.print("s{d}", .{parent});
     try out.writeByte(',');
     try writeLuaString(out, text);
     try out.print(") current=s{d}\n", .{level});
