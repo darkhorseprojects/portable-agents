@@ -17,13 +17,12 @@ pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
     defer script.deinit();
     const out = &output.writer;
     try out.writeAll(
-        \\local function document()
+        \\local document=require("pa").document(function(root)
         \\ local function section(parent,name)
         \\  local value=parent[name]
         \\  if value==nil then value={} parent[name]=value end
         \\  return value
         \\ end
-        \\ local root={}
         \\ local current=root
         \\ local s1,s2,s3,s4,s5,s6
         \\ local function add(value) current[#current+1]=value end
@@ -46,8 +45,8 @@ pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
             try emitText(out, &lines, line);
         }
     }
-    try out.writeAll("return root\nend\n");
-    if (has_lua) try out.writeAll(script.written()) else try out.writeAll("return document()\n");
+    try out.writeAll("end)\n");
+    if (has_lua) try out.writeAll(script.written()) else try out.writeAll("return document\n");
     return output.toOwnedSlice();
 }
 

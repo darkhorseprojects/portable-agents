@@ -132,14 +132,14 @@ fn initialize(state: *zlua.Lua) !i32 {
         state.setField(-2, module.name);
     }
     state.pop(1);
-    state.createTable(0, 6);
+    state.createTable(0, 7);
     capability.pushMarkFunction(state, self.agent_id);
     state.setField(-2, "_mark");
     capability.pushAgentIdFunction(state);
     state.setField(-2, "agentid");
     try host.install(state, self.client);
-    state.setGlobal("pa");
     try state.loadBuffer(
+        \\local pa=...
         \\local mark,agentid,next,type,error,setmetatable=pa._mark,pa.agentid,next,type,error,setmetatable
         \\local function capability(call,exports)
         \\ if type(call)~="function" or exports~=nil and type(exports)~="table" then error("invalid capability",2) end
@@ -150,9 +150,18 @@ fn initialize(state: *zlua.Lua) !i32 {
         \\ end
         \\ return mark(setmetatable(value,{__call=function(_,...) return call(...) end,__metatable=false}))
         \\end
-        \\pa.capability=capability pa._mark=nil
+        \\local function document(project)
+        \\ if type(project)~="function" then error("invalid document",2) end
+        \\ return function()
+        \\  local value={} project(value) return value
+        \\ end
+        \\end
+        \\pa.capability=capability pa.document=document pa._mark=nil
+        \\package.preload.pa=function() return pa end
     , "pa", .text);
-    state.call(.{});
+    state.pushValue(-2);
+    state.call(.{ .args = 1 });
+    state.pop(1);
     return 0;
 }
 

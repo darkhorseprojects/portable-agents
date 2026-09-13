@@ -51,6 +51,7 @@ pub const Image = struct {
             for (name) |*byte| {
                 if (byte.* == '/' or byte.* == '\\') byte.* = '.';
             }
+            if (std.mem.eql(u8, name, "pa")) return error.ReservedModule;
             for (modules.items) |module| {
                 if (std.mem.eql(u8, module.name, name)) return error.DuplicateModule;
             }

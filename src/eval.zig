@@ -13,7 +13,9 @@ pub fn install(owner: *runtime.Runtime) !void {
 
 fn installDispatch(state: *zlua.Lua) !i32 {
     const owner: *runtime.Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(1).?)));
-    _ = state.getGlobal("pa");
+    _ = state.getGlobal("require");
+    _ = state.pushString("pa");
+    state.call(.{ .args = 1, .results = 1 });
     state.pushLightUserdata(owner);
     state.pushClosure(zlua.wrap(dispatch), 1);
     state.setField(-2, "eval");
