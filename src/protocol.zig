@@ -3,45 +3,27 @@ const pa = @import("pa");
 
 const Allocator = std.mem.Allocator;
 
-const WireLimits = struct {
-    bytes: ?usize = null,
-    steps: ?[]const u8 = null,
-};
-
 const WireAgent = struct {
-    source: []const u8,
-    agentId: []const u8,
-    limits: WireLimits = .{},
+    sourceDir: []const u8,
+    entryModule: []const u8,
+    limits: struct {
+        memoryBytes: ?usize = null,
+        instructions: ?[]const u8 = null,
+    } = .{},
 };
 
 const WireImport = struct {
     name: []const u8,
     agent: usize,
-    entry: []const u8,
+    config: []const u8,
 };
 
 const Request = struct {
     version: u8,
     agents: []const WireAgent,
     imports: []const WireImport = &.{},
-    entry: []const u8,
     input: []const u8,
-};
-
-const OwnedAgent = struct {
-    image: pa.Image,
-    agent: pa.Agent,
-
-    fn init(self: *OwnedAgent, allocator: Allocator, io: std.Io, wire: WireAgent) !void {
-        self.image = try pa.Image.init(allocator, io, wire.source);
-        errdefer self.image.deinit();
-        self.agent = pa.Agent.init(allocator, io, .{ .agent_id = try decodeAgentId(wire.agentId), .limits = try decodeLimits(wire.limits) });
-    }
-
-    fn deinit(self: *OwnedAgent) void {
-        self.agent.deinit();
-        self.image.deinit();
-    }
+    config: []const u8,
 };
 
 pub fn call(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, writer: *std.Io.Writer) !void {
@@ -50,9 +32,9 @@ pub fn call(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, writer: *s
         return;
     };
     defer allocator.free(output);
-    const encoded = try encodeBase64(allocator, output);
+    const encoded = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(output.len));
     defer allocator.free(encoded);
-    try write(writer, .{ .result = .{ .output = encoded } });
+    try write(writer, .{ .result = .{ .output = std.base64.standard.Encoder.encode(encoded, output) } });
 }
 
 fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader) ![]u8 {
@@ -62,44 +44,36 @@ fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader) ![]u8 {
     const bytes = try reader.allocRemaining(scratch, .unlimited);
     if (bytes.len == 0) return error.MissingRequest;
     const request = try std.json.parseFromSliceLeaky(Request, scratch, bytes, .{});
-    if (request.version != 3 or request.agents.len == 0) return error.InvalidProtocol;
-    const owned = try scratch.alloc(OwnedAgent, request.agents.len);
+    if (request.version != 4 or request.agents.len == 0) return error.InvalidProtocol;
+    const input = try decodeBase64(scratch, request.input);
+    const config = try decodeBase64(scratch, request.config);
+    const agents = try scratch.alloc(pa.Agent, request.agents.len);
+    const imports = try scratch.alloc(pa.Import, request.imports.len);
+    for (imports, request.imports, 0..) |*value, wire, index| {
+        if (wire.name.len == 0 or std.mem.indexOfScalar(u8, wire.name, 0) != null or
+            std.mem.eql(u8, wire.name, "pa") or wire.agent == 0 or wire.agent >= agents.len) return error.InvalidImport;
+        for (request.imports[0..index]) |prior| {
+            if (std.mem.eql(u8, prior.name, wire.name)) return error.DuplicateImport;
+        }
+        value.* = .{
+            .name = wire.name,
+            .agent = &agents[wire.agent],
+            .config = try decodeBase64(scratch, wire.config),
+        };
+    }
     var initialized: usize = 0;
     defer while (initialized > 0) {
         initialized -= 1;
-        owned[initialized].deinit();
+        agents[initialized].deinit();
     };
-    for (owned, request.agents) |*item, wire| {
-        try item.init(allocator, io, wire);
+    for (agents, request.agents) |*agent, wire| {
+        var limits: pa.Limits = .{};
+        if (wire.limits.memoryBytes) |memory_bytes| limits.memory_bytes = memory_bytes;
+        if (wire.limits.instructions) |instructions| limits.instructions = try std.fmt.parseInt(u64, instructions, 10);
+        agent.* = try pa.Agent.init(allocator, io, wire.sourceDir, wire.entryModule, limits);
         initialized += 1;
     }
-    const imports = try scratch.alloc(pa.Import, request.imports.len);
-    for (imports, request.imports) |*value, wire| {
-        if (wire.agent >= owned.len) return error.InvalidProtocol;
-        const agent = &owned[wire.agent];
-        value.* = .{ .name = wire.name, .agent = &agent.agent, .image = &agent.image, .entry = wire.entry };
-    }
-    const root = &owned[0];
-    return root.agent.call(allocator, &root.image, request.entry, try decodeBase64(scratch, request.input), imports);
-}
-
-fn decodeLimits(wire: WireLimits) !pa.Limits {
-    var limits: pa.Limits = .{};
-    if (wire.bytes) |bytes| limits.bytes = bytes;
-    if (wire.steps) |steps| limits.steps = try std.fmt.parseInt(u64, steps, 10);
-    return limits;
-}
-
-fn encodeBase64(allocator: Allocator, bytes: []const u8) ![]const u8 {
-    const output = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
-    return std.base64.standard.Encoder.encode(output, bytes);
-}
-
-fn decodeAgentId(encoded: []const u8) !pa.AgentId {
-    var value: pa.AgentId = undefined;
-    if (try std.base64.standard.Decoder.calcSizeForSlice(encoded) != value.len) return error.InvalidAgentId;
-    try std.base64.standard.Decoder.decode(&value, encoded);
-    return value;
+    return agents[0].call(allocator, input, config, imports);
 }
 
 fn decodeBase64(allocator: Allocator, encoded: []const u8) ![]u8 {

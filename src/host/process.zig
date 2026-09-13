@@ -3,33 +3,22 @@ const zlua = @import("zlua");
 const lua_state = @import("../lua.zig");
 
 pub fn install(lua: *zlua.Lua) void {
-    lua.pushFunction(zlua.wrap(create));
+    lua.pushFunction(zlua.wrap(run));
     lua.setField(-2, "process");
 }
 
-fn create(lua: *zlua.Lua) !i32 {
-    if (lua.typeOf(1) != .string) return error.ExpectedExecutable;
+fn run(lua: *zlua.Lua) !i32 {
+    errdefer lua_state.control(lua).io.checkCancel() catch lua_state.control(lua).cancellation.cancel();
+    if (lua.typeOf(1) != .string or lua.typeOf(2) != .table or
+        (!lua.isNoneOrNil(3) and lua.typeOf(3) != .string)) return error.InvalidProcessCall;
     const executable = try lua.toString(1);
     if (!std.fs.path.isAbsolute(executable) or std.mem.indexOfScalar(u8, executable, 0) != null) return error.ExpectedAbsolutePath;
-    lua.createTable(0, 1);
-    lua.pushValue(1);
-    lua.pushClosure(zlua.wrap(run), 1);
-    lua.setField(-2, "run");
-    return 1;
-}
-
-fn run(lua: *zlua.Lua) !i32 {
-    return lua_state.propagate(lua_state.control(lua).cancellation, runValue(lua));
-}
-
-fn runValue(lua: *zlua.Lua) !i32 {
-    if (lua.typeOf(1) != .table or (!lua.isNoneOrNil(2) and lua.typeOf(2) != .string)) return error.InvalidProcessCall;
-    const count = try denseLength(lua, 1);
+    const count = try denseLength(lua, 2);
     const argv = try lua.allocator().alloc([]const u8, try std.math.add(usize, count, 1));
     defer lua.allocator().free(argv);
-    argv[0] = try lua.toString(zlua.Lua.upvalueIndex(1));
+    argv[0] = executable;
     for (argv[1..], 1..) |*argument, index| {
-        _ = lua.getIndex(1, @intCast(index));
+        _ = lua.getIndex(2, @intCast(index));
         argument.* = try lua.toString(-1);
         if (std.mem.indexOfScalar(u8, argument.*, 0) != null) return error.ExpectedArgv;
         lua.pop(1);
@@ -44,7 +33,7 @@ fn runValue(lua: *zlua.Lua) !i32 {
     defer child.kill(io);
     const input_file = child.stdin.?;
     child.stdin = null;
-    const input = if (lua.isNoneOrNil(2)) "" else try lua.toString(2);
+    const input = if (lua.isNoneOrNil(3)) "" else try lua.toString(3);
     var sender = try io.concurrent(sendInput, .{ input_file, io, input });
     defer _ = sender.cancel(io) catch {};
     var storage: std.Io.File.MultiReader.Buffer(2) = undefined;

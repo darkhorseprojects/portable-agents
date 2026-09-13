@@ -12,15 +12,19 @@ const Module = struct {
 pub const Image = struct {
     arena: std.heap.ArenaAllocator,
     modules: []const Module,
+    entry: [:0]const u8,
 
-    pub fn init(allocator: Allocator, io: std.Io, source: []const u8) !Image {
+    pub fn init(allocator: Allocator, io: std.Io, source_dir: []const u8, entry_module: []const u8) !Image {
+        if (entry_module.len == 0) return error.InvalidEntry;
         var image = Image{
             .arena = std.heap.ArenaAllocator.init(allocator),
             .modules = &.{},
+            .entry = undefined,
         };
         errdefer image.arena.deinit();
         const output = image.arena.allocator();
-        const directory = try std.Io.Dir.cwd().openDir(io, source, .{
+        image.entry = try output.dupeZ(u8, entry_module);
+        const directory = try std.Io.Dir.cwd().openDir(io, source_dir, .{
             .iterate = true,
             .follow_symlinks = false,
         });
@@ -30,6 +34,7 @@ pub const Image = struct {
         const compiler = try zlua.Lua.init(allocator);
         defer compiler.deinit();
         var modules: std.ArrayList(Module) = .empty;
+        var has_entry = false;
         while (try walker.next(io)) |entry| {
             if (entry.kind != .file) continue;
             const extension_index = std.mem.lastIndexOfScalar(u8, entry.path, '.') orelse continue;
@@ -52,6 +57,7 @@ pub const Image = struct {
                 if (byte.* == '/' or byte.* == '\\') byte.* = '.';
             }
             if (std.mem.eql(u8, name, "pa")) return error.ReservedModule;
+            has_entry = has_entry or std.mem.eql(u8, name, image.entry);
             for (modules.items) |module| {
                 if (std.mem.eql(u8, module.name, name)) return error.DuplicateModule;
             }
@@ -60,6 +66,7 @@ pub const Image = struct {
                 .bytecode = try compileChunk(output, allocator, compiler, source_bytes, entry.path),
             });
         }
+        if (!has_entry) return error.MissingEntry;
         image.modules = modules.items;
         return image;
     }

@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "zlua", .module = zlua.module("zlua") }},
     });
     const exe = b.addExecutable(.{
-        .name = "agent",
+        .name = "portable-agent",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -28,7 +28,4 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(exe);
-    const run = b.addRunArtifact(exe);
-    if (b.args) |args| run.addArgs(args);
-    b.step("run", "Run agent").dependOn(&run.step);
 }

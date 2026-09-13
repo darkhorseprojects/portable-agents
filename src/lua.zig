@@ -4,8 +4,8 @@ const zlua = @import("zlua");
 const Allocator = std.mem.Allocator;
 
 pub const Limits = struct {
-    bytes: usize = 16 * 1024 * 1024,
-    steps: u64 = 2_000_000,
+    memory_bytes: usize = 16 * 1024 * 1024,
+    instructions: u64 = 2_000_000,
 };
 
 pub const Cancellation = struct {
@@ -21,9 +21,9 @@ pub const Cancellation = struct {
 };
 
 pub const Quota = struct {
-    child: Allocator,
-    used: usize = 0,
-    limit: usize,
+    backing: Allocator,
+    used_bytes: usize = 0,
+    max_bytes: usize,
 
     pub fn allocator(self: *Quota) Allocator {
         return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = Allocator.noResize, .remap = remap, .free = free } };
@@ -31,31 +31,31 @@ pub const Quota = struct {
 
     fn alloc(pointer: *anyopaque, len: usize, alignment: std.mem.Alignment, address: usize) ?[*]u8 {
         const self: *Quota = @ptrCast(@alignCast(pointer));
-        if (len > self.limit -| self.used) return null;
-        const result = self.child.rawAlloc(len, alignment, address) orelse return null;
-        self.used += len;
+        if (len > self.max_bytes -| self.used_bytes) return null;
+        const result = self.backing.rawAlloc(len, alignment, address) orelse return null;
+        self.used_bytes += len;
         return result;
     }
 
     fn remap(pointer: *anyopaque, memory: []u8, alignment: std.mem.Alignment, len: usize, address: usize) ?[*]u8 {
         const self: *Quota = @ptrCast(@alignCast(pointer));
-        if (len > memory.len and len - memory.len > self.limit -| self.used) return null;
-        const result = self.child.rawRemap(memory, alignment, len, address) orelse return null;
-        if (len > memory.len) self.used += len - memory.len else self.used -= memory.len - len;
+        if (len > memory.len and len - memory.len > self.max_bytes -| self.used_bytes) return null;
+        const result = self.backing.rawRemap(memory, alignment, len, address) orelse return null;
+        if (len > memory.len) self.used_bytes += len - memory.len else self.used_bytes -= memory.len - len;
         return result;
     }
 
     fn free(pointer: *anyopaque, memory: []u8, alignment: std.mem.Alignment, address: usize) void {
         const self: *Quota = @ptrCast(@alignCast(pointer));
-        self.child.rawFree(memory, alignment, address);
-        self.used -= memory.len;
+        self.backing.rawFree(memory, alignment, address);
+        self.used_bytes -= memory.len;
     }
 };
 
 pub const Control = struct {
     io: std.Io,
     cancellation: *Cancellation,
-    steps_left: u64,
+    remaining_instructions: u64,
 };
 
 pub fn attach(state: *zlua.Lua, value: *Control) void {
@@ -75,19 +75,12 @@ pub fn bytes(state: *zlua.Lua, index: i32) ![]const u8 {
     return if (state.typeOf(index) == .string) state.toString(index) else error.ExpectedBytes;
 }
 
-pub fn propagate(cancellation: *Cancellation, result: anytype) @TypeOf(result) {
-    return result catch |err| {
-        if (err == error.Canceled) cancellation.cancel();
-        return err;
-    };
-}
-
 fn hook(state: *zlua.Lua, _: zlua.Event, _: *zlua.DebugInfo) void {
     const value = control(state);
     value.io.checkCancel() catch {
         value.cancellation.cancel();
         state.raiseErrorStr("canceled", .{});
     };
-    if (value.steps_left < 1000) state.raiseErrorStr("step limit exceeded", .{});
-    value.steps_left -= 1000;
+    if (value.remaining_instructions < 1000) state.raiseErrorStr("instruction limit exceeded", .{});
+    value.remaining_instructions -= 1000;
 }

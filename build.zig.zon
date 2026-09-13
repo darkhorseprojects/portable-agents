@@ -9,5 +9,5 @@
             .hash = "zlua-0.1.0-hGRpCwGVBQCZRZ2QEHLENoYjRj-nNjD500_BmMsXeqT4",
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "deno.json", "src", "sdk", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "deno.json", "deno.lock", "src", "sdk", "LICENSE", "README.md" },
 }

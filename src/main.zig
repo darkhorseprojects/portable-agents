@@ -4,13 +4,13 @@ const protocol = @import("protocol.zig");
 
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    if (args.len == 3 and std.mem.eql(u8, args[1], "check")) {
-        var image = try pa.Image.init(init.gpa, init.io, args[2]);
+    if (args.len == 4 and std.mem.eql(u8, args[1], "check")) {
+        var image = try pa.Image.init(init.gpa, init.io, args[2], args[3]);
         image.deinit();
         return;
     }
     if (args.len != 2 or !std.mem.eql(u8, args[1], "call")) {
-        std.debug.print("usage: agent check <source> | agent call\n", .{});
+        std.debug.print("usage: agent check <source> <entry> | agent call\n", .{});
         return error.InvalidArguments;
     }
     var input_buffer: [8192]u8 = undefined;

@@ -4,70 +4,50 @@ const lua_state = @import("../lua.zig");
 
 pub fn install(lua: *zlua.Lua, client: *std.http.Client) void {
     lua.pushLightUserdata(client);
-    lua.pushClosure(zlua.wrap(create), 1);
+    lua.pushClosure(zlua.wrap(httpRequest), 1);
     lua.setField(-2, "http");
 }
 
-fn create(lua: *zlua.Lua) !i32 {
-    if (lua.typeOf(1) != .string) return error.ExpectedOrigin;
+fn httpRequest(lua: *zlua.Lua) !i32 {
+    errdefer lua_state.control(lua).io.checkCancel() catch lua_state.control(lua).cancellation.cancel();
+    if (lua.typeOf(1) != .string or lua.typeOf(2) != .string or lua.typeOf(3) != .string or
+        (!lua.isNoneOrNil(4) and lua.typeOf(4) != .string) or
+        (!lua.isNoneOrNil(5) and lua.typeOf(5) != .table)) return error.InvalidRequest;
     const origin = try lua.toString(1);
     try validateRequestBytes(origin);
-    const uri = try std.Uri.parse(origin);
+    var uri = try std.Uri.parse(origin);
     if ((!std.mem.eql(u8, uri.scheme, "http") and !std.mem.eql(u8, uri.scheme, "https")) or
         uri.host == null or uri.user != null or uri.password != null or !uri.path.isEmpty() or
-        uri.query != null or uri.fragment != null)
-    {
-        return error.InvalidOrigin;
-    }
-    lua.createTable(0, 1);
-    lua.pushValue(1);
-    lua.pushValue(zlua.Lua.upvalueIndex(1));
-    lua.pushClosure(zlua.wrap(request), 2);
-    lua.setField(-2, "request");
-    return 1;
-}
-
-fn request(lua: *zlua.Lua) !i32 {
-    return lua_state.propagate(lua_state.control(lua).cancellation, requestValue(lua));
-}
-
-fn requestValue(lua: *zlua.Lua) !i32 {
-    if (lua.typeOf(1) != .string or lua.typeOf(2) != .string or
-        (!lua.isNoneOrNil(3) and lua.typeOf(3) != .string) or
-        (!lua.isNoneOrNil(4) and lua.typeOf(4) != .table))
-    {
-        return error.InvalidRequest;
-    }
-    const method = std.meta.stringToEnum(std.http.Method, try lua.toString(1)) orelse return error.InvalidMethod;
-    const path = try lua.toString(2);
+        uri.query != null or uri.fragment != null) return error.InvalidOrigin;
+    const method = std.meta.stringToEnum(std.http.Method, try lua.toString(2)) orelse return error.InvalidMethod;
+    const path = try lua.toString(3);
     validateRequestBytes(path) catch return error.InvalidPath;
     if (path.len == 0 or path[0] != '/' or (path.len > 1 and path[1] == '/') or std.mem.indexOfScalar(u8, path, '\\') != null) return error.InvalidPath;
-    var uri = try std.Uri.parse(try lua.toString(zlua.Lua.upvalueIndex(1)));
     const relative = try std.Uri.parse(path);
     if (relative.host != null or relative.fragment != null) return error.InvalidPath;
     uri.path = relative.path;
     uri.query = relative.query;
-    const extra = try requestHeaders(lua, 4);
-    defer if (extra) |headers| lua.allocator().free(headers);
-    const client: *std.http.Client = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?)));
-    var value = try client.request(method, uri, .{
+    const headers = try requestHeaders(lua, 5);
+    defer if (headers) |extra| lua.allocator().free(extra);
+    const client: *std.http.Client = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?)));
+    var request = try client.request(method, uri, .{
         .redirect_behavior = .unhandled,
-        .extra_headers = extra orelse &.{},
+        .extra_headers = headers orelse &.{},
     });
-    defer value.deinit();
-    const body = if (lua.isNoneOrNil(3)) null else try lua.toString(3);
+    defer request.deinit();
+    const body = if (lua.isNoneOrNil(4)) null else try lua.toString(4);
     if (method.requestHasBody()) {
-        try value.sendBodyComplete(@constCast(body orelse ""));
+        try request.sendBodyComplete(@constCast(body orelse ""));
     } else {
         if (body) |bytes| if (bytes.len != 0) return error.UnexpectedBody;
-        try value.sendBodiless();
+        try request.sendBodiless();
     }
-    var response = try value.receiveHead(&.{});
+    var response = try request.receiveHead(&.{});
     var body_buffer: [8192]u8 = undefined;
-    const data = try response.reader(&body_buffer).allocRemaining(lua.allocator(), .unlimited);
-    defer lua.allocator().free(data);
+    const response_body = try response.reader(&body_buffer).allocRemaining(lua.allocator(), .unlimited);
+    defer lua.allocator().free(response_body);
     lua.pushInteger(@intCast(@intFromEnum(response.head.status)));
-    _ = lua.pushString(data);
+    _ = lua.pushString(response_body);
     return 2;
 }
 

@@ -1,13 +1,13 @@
 const std = @import("std");
 const zlua = @import("zlua");
-const capability = @import("capability.zig");
 const host = @import("host.zig");
-const image = @import("image.zig");
+const Image = @import("image.zig").Image;
 const lua = @import("lua.zig");
+const module = @import("module.zig");
 
 const Allocator = std.mem.Allocator;
 
-const Imported = struct {
+const LoadedImport = struct {
     name: []const u8,
     runtime: Runtime,
 };
@@ -15,40 +15,36 @@ const Imported = struct {
 pub const Runtime = struct {
     limits: lua.Limits,
     client: *std.http.Client,
-    image: *const image.Image,
-    entry: []const u8,
-    agent_id: *const capability.AgentId,
+    image: *const Image,
+    config: []const u8,
     quota: lua.Quota,
     control: lua.Control,
     state: *zlua.Lua,
-    imports: []Imported,
-    value: ?capability.Resolved,
+    imports: []LoadedImport,
+    entry: ?module.Resolved,
 
-    pub fn init(self: *Runtime, allocator: Allocator, agent: anytype, image_value: *const image.Image, entry: []const u8, imports: anytype, cancellation: *lua.Cancellation) !void {
-        for (imports, 0..) |item, index| {
-            for (imports[0..index]) |prior| if (std.mem.eql(u8, prior.name, item.name)) return error.DuplicateImport;
-        }
-        try self.open(allocator, agent.io, agent.limits, cancellation, &agent.client, image_value, entry, &agent.agent_id);
-        const storage = allocator.alloc(Imported, imports.len) catch |err| {
+    pub fn init(self: *Runtime, allocator: Allocator, agent: anytype, config: []const u8, imports: anytype, cancellation: *lua.Cancellation) !void {
+        try self.open(allocator, agent.client.io, agent.limits, cancellation, &agent.client, &agent.image, config);
+        const storage = allocator.alloc(LoadedImport, imports.len) catch |err| {
             self.state.deinit();
             return err;
         };
         errdefer self.abort(storage);
         for (storage, imports, 0..) |*loaded, item, index| {
             loaded.name = item.name;
-            try loaded.runtime.open(allocator, item.agent.io, item.agent.limits, cancellation, &item.agent.client, item.image, item.entry, &item.agent.agent_id);
+            try loaded.runtime.open(allocator, item.agent.client.io, item.agent.limits, cancellation, &item.agent.client, &item.agent.image, item.config);
             self.imports = storage[0 .. index + 1];
         }
     }
 
-    pub fn clone(self: *Runtime, source: *const Runtime) !void {
-        try self.openFrom(source);
-        const storage = source.quota.child.alloc(Imported, source.imports.len) catch |err| {
+    pub fn initClone(self: *Runtime, template: *const Runtime) !void {
+        try self.openFrom(template);
+        const storage = template.quota.backing.alloc(LoadedImport, template.imports.len) catch |err| {
             self.state.deinit();
             return err;
         };
         errdefer self.abort(storage);
-        for (storage, source.imports, 0..) |*loaded, existing, index| {
+        for (storage, template.imports, 0..) |*loaded, existing, index| {
             loaded.name = existing.name;
             try loaded.runtime.openFrom(&existing.runtime);
             self.imports = storage[0 .. index + 1];
@@ -58,7 +54,11 @@ pub const Runtime = struct {
     pub fn resolve(self: *Runtime) !void {
         for (self.imports) |*item| {
             try item.runtime.resolve();
-            try self.addImport(item.name, &item.runtime.value.?);
+            self.state.pushFunction(zlua.wrap(publishImport));
+            self.state.pushLightUserdata(@ptrCast(&item.name));
+            self.state.pushLightUserdata(&item.runtime.entry.?);
+            self.state.pushLightUserdata(@ptrCast(&item.runtime.config));
+            try lua.protect(self.state, .{ .args = 3 });
         }
         self.state.pushFunction(zlua.wrap(requireEntry));
         self.state.pushLightUserdata(self);
@@ -66,32 +66,31 @@ pub const Runtime = struct {
     }
 
     pub fn call(self: *Runtime, input: []const u8) ![]u8 {
-        return lua.propagate(self.control.cancellation, self.value.?.call(self.quota.child, input));
+        return self.entry.?.callable.call(self.quota.backing, input, self.config);
     }
 
     pub fn deinit(self: *Runtime) void {
-        if (self.value) |value| value.deinit();
+        if (self.entry) |entry| entry.deinit(self.state.allocator());
         self.state.deinit();
         var index = self.imports.len;
         while (index > 0) {
             index -= 1;
             self.imports[index].runtime.deinit();
         }
-        self.quota.child.free(self.imports);
+        self.quota.backing.free(self.imports);
     }
 
-    fn open(self: *Runtime, allocator: Allocator, io: std.Io, limits: lua.Limits, cancellation: *lua.Cancellation, client: *std.http.Client, image_value: *const image.Image, entry: []const u8, agent_id: *const capability.AgentId) !void {
+    fn open(self: *Runtime, allocator: Allocator, io: std.Io, limits: lua.Limits, cancellation: *lua.Cancellation, client: *std.http.Client, image: *const Image, config: []const u8) !void {
         self.* = .{
             .limits = limits,
             .client = client,
-            .image = image_value,
-            .entry = entry,
-            .agent_id = agent_id,
-            .quota = .{ .child = allocator, .limit = limits.bytes },
-            .control = .{ .io = io, .cancellation = cancellation, .steps_left = limits.steps },
+            .image = image,
+            .config = config,
+            .quota = .{ .backing = allocator, .max_bytes = limits.memory_bytes },
+            .control = .{ .io = io, .cancellation = cancellation, .remaining_instructions = limits.instructions },
             .state = undefined,
             .imports = &.{},
-            .value = null,
+            .entry = null,
         };
         self.state = try zlua.Lua.init(self.quota.allocator());
         errdefer self.state.deinit();
@@ -102,24 +101,17 @@ pub const Runtime = struct {
     }
 
     fn openFrom(self: *Runtime, source: *const Runtime) !void {
-        try self.open(source.quota.child, source.control.io, source.limits, source.control.cancellation, source.client, source.image, source.entry, source.agent_id);
+        try self.open(source.quota.backing, source.control.io, source.limits, source.control.cancellation, source.client, source.image, source.config);
     }
 
-    fn abort(self: *Runtime, storage: []Imported) void {
+    fn abort(self: *Runtime, storage: []LoadedImport) void {
         var index = self.imports.len;
         while (index > 0) {
             index -= 1;
             self.imports[index].runtime.deinit();
         }
-        self.quota.child.free(storage);
+        self.quota.backing.free(storage);
         self.state.deinit();
-    }
-
-    fn addImport(self: *Runtime, name: []const u8, value: *const capability.Resolved) !void {
-        self.state.pushFunction(zlua.wrap(publishImport));
-        self.state.pushLightUserdata(@ptrCast(&name));
-        self.state.pushLightUserdata(value);
-        try lua.protect(self.state, .{ .args = 2 });
     }
 };
 
@@ -127,36 +119,23 @@ fn initialize(state: *zlua.Lua) !i32 {
     const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(1).?)));
     state.openLibs();
     _ = state.getField(zlua.registry_index, zlua.preload_table);
-    for (self.image.modules) |module| {
-        try state.loadBuffer(module.bytecode, module.name, .binary);
-        state.setField(-2, module.name);
+    for (self.image.modules) |item| {
+        try state.loadBuffer(item.bytecode, item.name, .binary);
+        state.setField(-2, item.name);
     }
     state.pop(1);
-    state.createTable(0, 7);
-    capability.pushMarkFunction(state, self.agent_id);
-    state.setField(-2, "_mark");
-    capability.pushAgentIdFunction(state);
-    state.setField(-2, "agentid");
+    state.createTable(0, 5);
     try host.install(state, self.client);
     try state.loadBuffer(
         \\local pa=...
-        \\local mark,agentid,next,type,error,setmetatable=pa._mark,pa.agentid,next,type,error,setmetatable
-        \\local function capability(call,exports)
-        \\ if type(call)~="function" or exports~=nil and type(exports)~="table" then error("invalid capability",2) end
-        \\ local value={}
-        \\ for name,export in next,exports or {} do
-        \\  if type(name)~="string" then error("invalid capability export",2) end
-        \\  agentid(export) value[name]=export
-        \\ end
-        \\ return mark(setmetatable(value,{__call=function(_,...) return call(...) end,__metatable=false}))
-        \\end
+        \\local type,error=type,error
         \\local function document(project)
         \\ if type(project)~="function" then error("invalid document",2) end
         \\ return function()
         \\  local value={} project(value) return value
         \\ end
         \\end
-        \\pa.capability=capability pa.document=document pa._mark=nil
+        \\pa.document=document
         \\package.preload.pa=function() return pa end
     , "pa", .text);
     state.pushValue(-2);
@@ -167,14 +146,15 @@ fn initialize(state: *zlua.Lua) !i32 {
 
 fn publishImport(state: *zlua.Lua) !i32 {
     const name: *const []const u8 = @ptrCast(@alignCast(state.toPointer(1).?));
-    const value: *const capability.Resolved = @ptrCast(@alignCast(state.toPointer(2).?));
+    const value: *const module.Resolved = @ptrCast(@alignCast(state.toPointer(2).?));
+    const config: *const []const u8 = @ptrCast(@alignCast(state.toPointer(3).?));
     _ = state.getField(zlua.registry_index, zlua.preload_table);
     _ = state.pushString(name.*);
     _ = state.getTableRaw(-2);
     if (!state.isNil(-1)) return error.DuplicateImport;
     state.pop(1);
     _ = state.pushString(name.*);
-    capability.pushLoader(state, value);
+    module.pushLoader(state, value, config);
     state.setTableRaw(-3);
     state.pop(1);
     return 0;
@@ -183,8 +163,8 @@ fn publishImport(state: *zlua.Lua) !i32 {
 fn requireEntry(state: *zlua.Lua) !i32 {
     const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(1).?)));
     _ = state.getGlobal("require");
-    _ = state.pushString(self.entry);
+    _ = state.pushString(self.image.entry);
     state.call(.{ .args = 1, .results = 1 });
-    self.value = try capability.Resolved.capture(state, -1);
+    self.entry = try module.Resolved.capture(state.allocator(), state, -1);
     return 0;
 }
