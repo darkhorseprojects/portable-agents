@@ -17,7 +17,7 @@ pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
     defer script.deinit();
     const out = &output.writer;
     try out.writeAll(
-        \\local document=require("pa").document(function(root)
+        \\local require=require("pa")._bindDocument(function(root)
         \\ local function section(parent,name)
         \\  local value=parent[name]
         \\  if value==nil then value={} parent[name]=value end
@@ -46,7 +46,7 @@ pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
         }
     }
     try out.writeAll("end)\n");
-    if (has_lua) try out.writeAll(script.written()) else try out.writeAll("return document\n");
+    if (has_lua) try out.writeAll(script.written()) else try out.writeAll("return require(\"pa\").document()\n");
     return output.toOwnedSlice();
 }
 

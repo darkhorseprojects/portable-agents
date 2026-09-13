@@ -128,14 +128,30 @@ fn initialize(state: *zlua.Lua) !i32 {
     try host.install(state, self.client);
     try state.loadBuffer(
         \\local pa=...
-        \\local type,error=type,error
-        \\local function document(project)
+        \\local type,error,next,setmetatable,require=type,error,next,setmetatable,require
+        \\local function readonly(value)
+        \\ if type(value)~="table" then return value end
+        \\ local data={}
+        \\ for key,item in next,value do data[key]=readonly(item) end
+        \\ return setmetatable({}, {
+        \\  __index=data,
+        \\  __newindex=function() error("immutable document",2) end,
+        \\  __len=function() return #data end,
+        \\  __pairs=function() return next,data,nil end,
+        \\  __metatable=false,
+        \\ })
+        \\end
+        \\local function bindDocument(project)
         \\ if type(project)~="function" then error("invalid document",2) end
-        \\ return function()
-        \\  local value={} project(value) return value
+        \\ local value={} project(value) value=readonly(value)
+        \\ local module_pa=setmetatable({document=function() return value end},{__index=pa,__metatable=false})
+        \\ return function(name)
+        \\  if name=="pa" then return module_pa end
+        \\  return require(name)
         \\ end
         \\end
-        \\pa.document=document
+        \\pa.document=function() error("document unavailable",2) end
+        \\pa._bindDocument=bindDocument
         \\package.preload.pa=function() return pa end
     , "pa", .text);
     state.pushValue(-2);
