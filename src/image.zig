@@ -11,24 +11,23 @@ const Module = struct {
 
 pub const Image = struct {
     arena: std.heap.ArenaAllocator,
+    directory: std.Io.Dir,
     modules: []const Module,
     entry: [:0]const u8,
 
     pub fn init(allocator: Allocator, io: std.Io, source_dir: []const u8, entry_module: []const u8) !Image {
         if (entry_module.len == 0) return error.InvalidEntry;
+        const directory = try std.Io.Dir.cwd().openDir(io, source_dir, .{ .iterate = true, .follow_symlinks = false });
+        errdefer directory.close(io);
         var image = Image{
             .arena = std.heap.ArenaAllocator.init(allocator),
+            .directory = directory,
             .modules = &.{},
             .entry = undefined,
         };
         errdefer image.arena.deinit();
         const output = image.arena.allocator();
         image.entry = try output.dupeZ(u8, entry_module);
-        const directory = try std.Io.Dir.cwd().openDir(io, source_dir, .{
-            .iterate = true,
-            .follow_symlinks = false,
-        });
-        defer directory.close(io);
         var walker = try directory.walk(allocator);
         defer walker.deinit();
         const compiler = try zlua.Lua.init(allocator);
@@ -71,7 +70,8 @@ pub const Image = struct {
         return image;
     }
 
-    pub fn deinit(self: *Image) void {
+    pub fn deinit(self: *Image, io: std.Io) void {
+        self.directory.close(io);
         self.arena.deinit();
     }
 };

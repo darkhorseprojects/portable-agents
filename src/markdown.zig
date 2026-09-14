@@ -1,6 +1,5 @@
 const std = @import("std");
 
-const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
 
 const Lines = @TypeOf(std.mem.splitScalar(u8, "", '\n'));
@@ -10,7 +9,7 @@ fn peek(lines: Lines) ?[]const u8 {
     return copy.next();
 }
 
-pub fn translate(allocator: Allocator, source: []const u8) ![]u8 {
+pub fn translate(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     var output = Writer.Allocating.init(allocator);
     errdefer output.deinit();
     var script = Writer.Allocating.init(allocator);

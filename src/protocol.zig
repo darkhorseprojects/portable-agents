@@ -78,7 +78,6 @@ fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader) ![]u8 {
 
 fn decodeBase64(allocator: Allocator, encoded: []const u8) ![]u8 {
     const output = try allocator.alloc(u8, try std.base64.standard.Decoder.calcSizeForSlice(encoded));
-    errdefer allocator.free(output);
     try std.base64.standard.Decoder.decode(output, encoded);
     return output;
 }

@@ -4,11 +4,10 @@ const zlua = @import("zlua");
 const lua_state = @import("../lua.zig");
 
 const Root = struct {
-    dir: std.Io.Dir,
-    open: bool,
+    dir: ?std.Io.Dir,
 };
 
-pub fn install(lua: *zlua.Lua) !void {
+pub fn install(lua: *zlua.Lua, package_dir: *const std.Io.Dir) !void {
     try lua.newMetatable("pa.fs.root");
     lua.createTable(0, 2);
     lua.pushFunction(zlua.wrap(read));
@@ -21,41 +20,51 @@ pub fn install(lua: *zlua.Lua) !void {
     lua.pushFunction(zlua.wrap(close));
     lua.setField(-2, "__close");
     lua.pop(1);
-    lua.pushFunction(zlua.wrap(create));
+    lua.pushLightUserdata(@ptrCast(@constCast(package_dir)));
+    lua.pushClosure(zlua.wrap(create), 1);
     lua.setField(-2, "fs");
 }
 
 fn create(lua: *zlua.Lua) !i32 {
     errdefer lua_state.control(lua).io.checkCancel() catch lua_state.control(lua).cancellation.cancel();
-    if (lua.typeOf(1) != .string) return error.ExpectedPath;
-    const path = try lua.toString(1);
-    if (std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidPath;
+    const package_dir: *const std.Io.Dir = @ptrCast(@alignCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?));
+    const io = lua_state.control(lua).io;
+    const path = if (lua.typeOf(1) == .none or lua.isNil(1)) null else blk: {
+        if (lua.typeOf(1) != .string) return error.ExpectedPath;
+        break :blk try lua.toString(1);
+    };
     const root = lua.newUserdata(Root, 0);
-    root.* = .{ .dir = undefined, .open = false };
+    root.* = .{ .dir = null };
     lua.setMetatableRegistry("pa.fs.root");
-    root.dir = try std.Io.Dir.cwd().openDir(lua_state.control(lua).io, path, .{ .follow_symlinks = false });
-    root.open = true;
+    if (path == null) {
+        root.dir = try package_dir.openDir(io, ".", .{ .follow_symlinks = false });
+    } else if (std.fs.path.isAbsolute(path.?)) {
+        root.dir = try std.Io.Dir.openDirAbsolute(io, path.?, .{ .follow_symlinks = false });
+    } else {
+        var parent = try openParent(package_dir.*, io, path.?);
+        defer if (parent.owns_dir) parent.dir.close(io);
+        root.dir = try parent.dir.openDir(io, parent.name, .{ .follow_symlinks = false });
+    }
     return 1;
 }
 
 fn close(lua: *zlua.Lua) i32 {
     const root = lua.toUserdata(Root, 1) catch return 0;
-    if (root.open) root.dir.close(lua_state.control(lua).io);
-    root.open = false;
+    if (root.dir) |dir| dir.close(lua_state.control(lua).io);
+    root.dir = null;
     return 0;
 }
 
 fn read(lua: *zlua.Lua) !i32 {
     errdefer lua_state.control(lua).io.checkCancel() catch lua_state.control(lua).cancellation.cancel();
-    const root = try lua.toUserdata(Root, 1);
-    if (!root.open or lua.typeOf(2) != .string) return error.ExpectedPath;
+    if (lua.typeOf(2) != .string) return error.ExpectedPath;
+    const root = (try lua.toUserdata(Root, 1)).dir orelse return error.ExpectedPath;
     const io = lua_state.control(lua).io;
     var parent = try openParent(root, io, try lua.toString(2));
     defer if (parent.owns_dir) parent.dir.close(io);
     const file = try parent.dir.openFile(io, parent.name, .{
         .allow_directory = false,
         .follow_symlinks = false,
-        .resolve_beneath = true,
     });
     defer file.close(io);
     var buffer: [8192]u8 = undefined;
@@ -68,8 +77,8 @@ fn read(lua: *zlua.Lua) !i32 {
 
 fn write(lua: *zlua.Lua) !i32 {
     errdefer lua_state.control(lua).io.checkCancel() catch lua_state.control(lua).cancellation.cancel();
-    const root = try lua.toUserdata(Root, 1);
-    if (!root.open or lua.typeOf(2) != .string or lua.typeOf(3) != .string) return error.ExpectedBytes;
+    if (lua.typeOf(2) != .string or lua.typeOf(3) != .string) return error.ExpectedBytes;
+    const root = (try lua.toUserdata(Root, 1)).dir orelse return error.ExpectedBytes;
     const io = lua_state.control(lua).io;
     var parent = try openParent(root, io, try lua.toString(2));
     defer if (parent.owns_dir) parent.dir.close(io);
@@ -87,11 +96,11 @@ fn write(lua: *zlua.Lua) !i32 {
     return 0;
 }
 
-fn openParent(root: *const Root, io: std.Io, path: []const u8) !struct { dir: std.Io.Dir, owns_dir: bool, name: []const u8 } {
+fn openParent(root: std.Io.Dir, io: std.Io, path: []const u8) !struct { dir: std.Io.Dir, owns_dir: bool, name: []const u8 } {
     if (path.len == 0 or std.fs.path.isAbsolute(path) or std.mem.indexOfScalar(u8, path, '\\') != null or
         (builtin.os.tag == .windows and std.mem.indexOfScalar(u8, path, ':') != null)) return error.InvalidPath;
     var parts = std.mem.splitScalar(u8, path, '/');
-    var current = root.dir;
+    var current = root;
     var owned = false;
     errdefer if (owned) current.close(io);
     var name = parts.next().?;

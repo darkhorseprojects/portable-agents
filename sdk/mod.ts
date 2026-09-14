@@ -48,13 +48,9 @@ export class Agent {
 export const make = Effect.fnUntraced(function* (options: AgentOptions) {
   const executable = options.executable ?? "agent";
   if (
-    !executable || !options.sourceDir || !options.entryModule ||
+    !executable ||
     (options.memoryBytes !== undefined &&
-      (!Number.isSafeInteger(options.memoryBytes) ||
-        options.memoryBytes <= 0)) ||
-    (options.instructions !== undefined &&
-      (options.instructions <= 0n ||
-        options.instructions > 0xffff_ffff_ffff_ffffn))
+      (!Number.isSafeInteger(options.memoryBytes) || options.memoryBytes <= 0))
   ) return yield* fail("InvalidOptions");
   return new Agent({ ...options, executable });
 });
@@ -128,21 +124,11 @@ function encode(
     return index;
   };
   add(root);
-  const names = new Set<string>();
-  const imports = values.map((value) => {
-    if (
-      !value.name || value.name === "pa" || value.agent === root ||
-      names.has(value.name)
-    ) {
-      throw new Error("invalid import");
-    }
-    names.add(value.name);
-    return {
-      name: value.name,
-      agent: add(value.agent),
-      config: Encoding.encodeBase64(value.config),
-    };
-  });
+  const imports = values.map((value) => ({
+    name: value.name,
+    agent: add(value.agent),
+    config: Encoding.encodeBase64(value.config),
+  }));
   return {
     version: 4,
     agents,

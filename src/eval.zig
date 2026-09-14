@@ -4,18 +4,16 @@ const lua = @import("lua.zig");
 const module = @import("module.zig");
 const runtime = @import("runtime.zig");
 
-const Allocator = std.mem.Allocator;
-
-const EvalResult = union(enum) {
-    output: []u8,
-    failure: []u8,
+const EvalResult = struct {
+    ok: bool,
+    value: []u8,
 };
 
 pub fn install(owner: *runtime.Runtime) !void {
     owner.state.pushFunction(zlua.wrap(installDispatch));
     owner.state.pushLightUserdata(owner);
     try lua.protect(owner.state, .{ .args = 1 });
-    for (owner.imports) |*item| try install(&item.runtime);
+    for (owner.imports.items) |*item| try install(&item.runtime);
 }
 
 fn installDispatch(state: *zlua.Lua) !i32 {
@@ -38,18 +36,10 @@ fn dispatch(state: *zlua.Lua) !i32 {
     defer state.allocator().free(selection);
     if (state.typeOf(2) == .string) {
         const result = try evaluate(owner, selection, try lua.bytes(state, 2), input);
-        switch (result) {
-            .output => |output| {
-                defer owner.quota.backing.free(output);
-                _ = state.pushString(output);
-                return 1;
-            },
-            .failure => |failure| {
-                _ = state.pushString(failure);
-                owner.quota.backing.free(failure);
-                state.raiseError();
-            },
-        }
+        _ = state.pushString(result.value);
+        owner.quota.backing.free(result.value);
+        if (!result.ok) state.raiseError();
+        return 1;
     }
     if (!state.isTable(2)) return error.ExpectedEvalSource;
     const count = std.math.cast(i32, state.lenRaw(2)) orelse return error.TooManyEvalSources;
@@ -70,33 +60,21 @@ fn dispatch(state: *zlua.Lua) !i32 {
             if (err == error.Canceled) owner.control.cancellation.cancel();
         }
     }
-    defer for (futures) |future| if (future.result) |result| switch (result) {
-        .output => |output| owner.quota.backing.free(output),
-        .failure => |failure| owner.quota.backing.free(failure),
-    } else |_| {};
+    defer for (futures) |future| if (future.result) |result| owner.quota.backing.free(result.value) else |_| {};
     state.createTable(count, 0);
     for (futures, 1..) |future, index| {
-        state.createTable(0, 2);
-        switch (try future.result) {
-            .output => |output| {
-                state.pushBoolean(true);
-                state.setIndex(-2, 1);
-                _ = state.pushString(output);
-                state.setIndex(-2, 2);
-            },
-            .failure => |failure| {
-                state.pushBoolean(false);
-                state.setIndex(-2, 1);
-                _ = state.pushString(failure);
-                state.setIndex(-2, 2);
-            },
-        }
+        const result = try future.result;
+        state.createTable(2, 0);
+        state.pushBoolean(result.ok);
+        state.setIndex(-2, 1);
+        _ = state.pushString(result.value);
+        state.setIndex(-2, 2);
         state.setIndex(-2, @intCast(index));
     }
     return 1;
 }
 
-fn captureSelection(allocator: Allocator, root: module.Resolved, state: *zlua.Lua, index: i32) ![][]const u8 {
+fn captureSelection(allocator: std.mem.Allocator, root: module.Resolved, state: *zlua.Lua, index: i32) ![][]const u8 {
     var names: std.ArrayList([]const u8) = .empty;
     errdefer names.deinit(allocator);
     const view = state.absIndex(index);
@@ -137,16 +115,13 @@ fn run(owner: *runtime.Runtime, selection: []const []const u8, code: []const u8,
         if (owner.control.cancellation.canceled()) return error.Canceled;
         if (err != error.LuaRuntime) return err;
         const message = state.toString(-1) catch unreachable;
-        const failure = try owner.quota.backing.dupe(u8, message[0..@min(message.len, owner.limits.memory_bytes)]);
-        state.remove(message_handler);
-        return .{ .failure = failure };
+        return .{ .ok = false, .value = try owner.quota.backing.dupe(u8, message) };
     };
-    state.remove(message_handler);
     if (owner.control.cancellation.canceled()) return error.Canceled;
     const output = lua.bytes(state, -1) catch |err| switch (err) {
-        error.ExpectedBytes, error.ExpectedString => return .{ .failure = try owner.quota.backing.dupe(u8, @errorName(err)) },
+        error.ExpectedBytes, error.ExpectedString => return .{ .ok = false, .value = try owner.quota.backing.dupe(u8, @errorName(err)) },
     };
-    return .{ .output = try owner.quota.backing.dupe(u8, output) };
+    return .{ .ok = true, .value = try owner.quota.backing.dupe(u8, output) };
 }
 
 fn traceback(state: *zlua.Lua) i32 {
@@ -173,9 +148,9 @@ fn execute(state: *zlua.Lua) !i32 {
         module.pushProxy(state, function, &owner.config, 1);
         state.setTableRaw(self);
     }
-    state.createTable(0, @intCast(owner.imports.len));
+    state.createTable(0, @intCast(owner.imports.items.len));
     const imports = state.absIndex(-1);
-    for (owner.imports) |*item| {
+    for (owner.imports.items) |*item| {
         _ = state.pushString(item.name);
         module.pushModuleProxy(state, &item.runtime.entry.?, &item.runtime.config);
         state.setTableRaw(imports);

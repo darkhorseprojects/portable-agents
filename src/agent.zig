@@ -27,8 +27,8 @@ pub const Agent = struct {
     }
 
     pub fn deinit(self: *Agent) void {
+        self.image.deinit(self.client.io);
         self.client.deinit();
-        self.image.deinit();
     }
 
     pub fn call(self: *Agent, allocator: Allocator, input: []const u8, config: []const u8, imports: []const Import) ![]u8 {

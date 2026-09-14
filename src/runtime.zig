@@ -1,6 +1,8 @@
 const std = @import("std");
 const zlua = @import("zlua");
-const host = @import("host.zig");
+const fs = @import("host/fs.zig");
+const http = @import("host/http.zig");
+const process = @import("host/process.zig");
 const Image = @import("image.zig").Image;
 const lua = @import("lua.zig");
 const module = @import("module.zig");
@@ -20,39 +22,39 @@ pub const Runtime = struct {
     quota: lua.Quota,
     control: lua.Control,
     state: *zlua.Lua,
-    imports: []LoadedImport,
+    imports: std.ArrayList(LoadedImport),
     entry: ?module.Resolved,
 
     pub fn init(self: *Runtime, allocator: Allocator, agent: anytype, config: []const u8, imports: anytype, cancellation: *lua.Cancellation) !void {
         try self.open(allocator, agent.client.io, agent.limits, cancellation, &agent.client, &agent.image, config);
-        const storage = allocator.alloc(LoadedImport, imports.len) catch |err| {
-            self.state.deinit();
-            return err;
-        };
-        errdefer self.abort(storage);
-        for (storage, imports, 0..) |*loaded, item, index| {
-            loaded.name = item.name;
-            try loaded.runtime.open(allocator, item.agent.client.io, item.agent.limits, cancellation, &item.agent.client, &item.agent.image, item.config);
-            self.imports = storage[0 .. index + 1];
+        errdefer self.deinit();
+        try self.imports.ensureTotalCapacity(allocator, imports.len);
+        for (imports) |item| {
+            const loaded = self.imports.addOneAssumeCapacity();
+            loaded.* = .{ .name = item.name, .runtime = undefined };
+            loaded.runtime.open(allocator, item.agent.client.io, item.agent.limits, cancellation, &item.agent.client, &item.agent.image, item.config) catch |err| {
+                _ = self.imports.pop();
+                return err;
+            };
         }
     }
 
     pub fn initClone(self: *Runtime, template: *const Runtime) !void {
         try self.openFrom(template);
-        const storage = template.quota.backing.alloc(LoadedImport, template.imports.len) catch |err| {
-            self.state.deinit();
-            return err;
-        };
-        errdefer self.abort(storage);
-        for (storage, template.imports, 0..) |*loaded, existing, index| {
-            loaded.name = existing.name;
-            try loaded.runtime.openFrom(&existing.runtime);
-            self.imports = storage[0 .. index + 1];
+        errdefer self.deinit();
+        try self.imports.ensureTotalCapacity(template.quota.backing, template.imports.items.len);
+        for (template.imports.items) |existing| {
+            const loaded = self.imports.addOneAssumeCapacity();
+            loaded.* = .{ .name = existing.name, .runtime = undefined };
+            loaded.runtime.openFrom(&existing.runtime) catch |err| {
+                _ = self.imports.pop();
+                return err;
+            };
         }
     }
 
     pub fn resolve(self: *Runtime) !void {
-        for (self.imports) |*item| {
+        for (self.imports.items) |*item| {
             try item.runtime.resolve();
             self.state.pushFunction(zlua.wrap(publishImport));
             self.state.pushLightUserdata(@ptrCast(&item.name));
@@ -72,12 +74,11 @@ pub const Runtime = struct {
     pub fn deinit(self: *Runtime) void {
         if (self.entry) |entry| entry.deinit(self.state.allocator());
         self.state.deinit();
-        var index = self.imports.len;
-        while (index > 0) {
-            index -= 1;
-            self.imports[index].runtime.deinit();
+        while (self.imports.items.len > 0) {
+            self.imports.items[self.imports.items.len - 1].runtime.deinit();
+            _ = self.imports.pop();
         }
-        self.quota.backing.free(self.imports);
+        self.imports.deinit(self.quota.backing);
     }
 
     fn open(self: *Runtime, allocator: Allocator, io: std.Io, limits: lua.Limits, cancellation: *lua.Cancellation, client: *std.http.Client, image: *const Image, config: []const u8) !void {
@@ -89,7 +90,7 @@ pub const Runtime = struct {
             .quota = .{ .backing = allocator, .max_bytes = limits.memory_bytes },
             .control = .{ .io = io, .cancellation = cancellation, .remaining_instructions = limits.instructions },
             .state = undefined,
-            .imports = &.{},
+            .imports = .empty,
             .entry = null,
         };
         self.state = try zlua.Lua.init(self.quota.allocator());
@@ -103,16 +104,6 @@ pub const Runtime = struct {
     fn openFrom(self: *Runtime, source: *const Runtime) !void {
         try self.open(source.quota.backing, source.control.io, source.limits, source.control.cancellation, source.client, source.image, source.config);
     }
-
-    fn abort(self: *Runtime, storage: []LoadedImport) void {
-        var index = self.imports.len;
-        while (index > 0) {
-            index -= 1;
-            self.imports[index].runtime.deinit();
-        }
-        self.quota.backing.free(storage);
-        self.state.deinit();
-    }
 };
 
 fn initialize(state: *zlua.Lua) !i32 {
@@ -125,7 +116,9 @@ fn initialize(state: *zlua.Lua) !i32 {
     }
     state.pop(1);
     state.createTable(0, 5);
-    try host.install(state, self.client);
+    try fs.install(state, &self.image.directory);
+    http.install(state, self.client);
+    process.install(state);
     try state.loadBuffer(
         \\local pa=...
         \\local type,error,next,setmetatable,require=type,error,next,setmetatable,require
