@@ -18,7 +18,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "zlua", .module = zlua.module("zlua") }},
     });
     const exe = b.addExecutable(.{
-        .name = "portable-agent",
+        .name = "agent",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,

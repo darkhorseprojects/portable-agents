@@ -22,8 +22,13 @@ fn httpRequest(lua: *zlua.Lua) !i32 {
     const method = std.meta.stringToEnum(std.http.Method, try lua.toString(2)) orelse return error.InvalidMethod;
     const path = try lua.toString(3);
     validateRequestBytes(path) catch return error.InvalidPath;
-    if (path.len == 0 or path[0] != '/' or (path.len > 1 and path[1] == '/') or std.mem.indexOfScalar(u8, path, '\\') != null) return error.InvalidPath;
-    const relative = try std.Uri.parse(path);
+    if (path.len == 0 or path[0] != '/' or
+        (path.len > 1 and path[1] == '/') or
+        std.mem.indexOfScalar(u8, path, '\\') != null)
+    {
+        return error.InvalidPath;
+    }
+    const relative = std.Uri.parseAfterScheme("", path) catch return error.InvalidPath;
     if (relative.host != null or relative.fragment != null) return error.InvalidPath;
     uri.path = relative.path;
     uri.query = relative.query;

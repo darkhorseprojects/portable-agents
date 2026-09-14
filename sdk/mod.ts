@@ -46,7 +46,7 @@ export class Agent {
 }
 
 export const make = Effect.fnUntraced(function* (options: AgentOptions) {
-  const executable = options.executable ?? "portable-agent";
+  const executable = options.executable ?? "agent";
   if (
     !executable || !options.sourceDir || !options.entryModule ||
     (options.memoryBytes !== undefined &&
