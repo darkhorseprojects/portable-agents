@@ -10,8 +10,16 @@ const Root = struct {
 
 pub fn install(lua: *zlua.Lua) !void {
     try lua.newMetatable("pa.fs.root");
+    lua.createTable(0, 2);
+    lua.pushFunction(zlua.wrap(read));
+    lua.setField(-2, "read");
+    lua.pushFunction(zlua.wrap(write));
+    lua.setField(-2, "write");
+    lua.setField(-2, "__index");
     lua.pushFunction(zlua.wrap(close));
     lua.setField(-2, "__gc");
+    lua.pushFunction(zlua.wrap(close));
+    lua.setField(-2, "__close");
     lua.pop(1);
     lua.pushFunction(zlua.wrap(create));
     lua.setField(-2, "fs");
@@ -25,16 +33,8 @@ fn create(lua: *zlua.Lua) !i32 {
     const root = lua.newUserdata(Root, 0);
     root.* = .{ .dir = undefined, .open = false };
     lua.setMetatableRegistry("pa.fs.root");
-    root.dir = try std.Io.Dir.cwd().openDir(lua_state.control(lua).io, path, .{});
+    root.dir = try std.Io.Dir.cwd().openDir(lua_state.control(lua).io, path, .{ .follow_symlinks = false });
     root.open = true;
-    const root_index = lua.getTop();
-    lua.createTable(0, 2);
-    inline for (.{ .{ "read", read }, .{ "write", write } }) |field| {
-        lua.pushValue(root_index);
-        lua.pushClosure(zlua.wrap(field[1]), 1);
-        lua.setField(-2, field[0]);
-    }
-    lua.remove(root_index);
     return 1;
 }
 
@@ -47,10 +47,10 @@ fn close(lua: *zlua.Lua) i32 {
 
 fn read(lua: *zlua.Lua) !i32 {
     errdefer lua_state.control(lua).io.checkCancel() catch lua_state.control(lua).cancellation.cancel();
-    const root = try lua.toUserdata(Root, zlua.Lua.upvalueIndex(1));
-    if (!root.open or lua.typeOf(1) != .string) return error.ExpectedPath;
+    const root = try lua.toUserdata(Root, 1);
+    if (!root.open or lua.typeOf(2) != .string) return error.ExpectedPath;
     const io = lua_state.control(lua).io;
-    var parent = try openParent(root, io, try lua.toString(1));
+    var parent = try openParent(root, io, try lua.toString(2));
     defer if (parent.owns_dir) parent.dir.close(io);
     const file = try parent.dir.openFile(io, parent.name, .{
         .allow_directory = false,
@@ -68,10 +68,10 @@ fn read(lua: *zlua.Lua) !i32 {
 
 fn write(lua: *zlua.Lua) !i32 {
     errdefer lua_state.control(lua).io.checkCancel() catch lua_state.control(lua).cancellation.cancel();
-    const root = try lua.toUserdata(Root, zlua.Lua.upvalueIndex(1));
-    if (!root.open or lua.typeOf(1) != .string or lua.typeOf(2) != .string) return error.ExpectedBytes;
+    const root = try lua.toUserdata(Root, 1);
+    if (!root.open or lua.typeOf(2) != .string or lua.typeOf(3) != .string) return error.ExpectedBytes;
     const io = lua_state.control(lua).io;
-    var parent = try openParent(root, io, try lua.toString(1));
+    var parent = try openParent(root, io, try lua.toString(2));
     defer if (parent.owns_dir) parent.dir.close(io);
     const permissions = if (parent.dir.statFile(io, parent.name, .{ .follow_symlinks = false })) |stat|
         stat.permissions
@@ -81,7 +81,7 @@ fn write(lua: *zlua.Lua) !i32 {
     };
     var atomic = try parent.dir.createFileAtomic(io, parent.name, .{ .replace = true, .permissions = permissions });
     defer atomic.deinit(io);
-    try atomic.file.writeStreamingAll(io, try lua.toString(2));
+    try atomic.file.writeStreamingAll(io, try lua.toString(3));
     try atomic.file.sync(io);
     try atomic.replace(io);
     return 0;
