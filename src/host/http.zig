@@ -38,6 +38,7 @@ fn httpRequest(lua: *zlua.Lua) !i32 {
     var request = try client.request(method, uri, .{
         .redirect_behavior = .unhandled,
         .extra_headers = headers orelse &.{},
+        .keep_alive = false,
     });
     defer request.deinit();
     const body = if (lua.isNoneOrNil(4)) null else try lua.toString(4);
