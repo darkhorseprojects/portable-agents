@@ -7,7 +7,9 @@ An `Agent` owns compiled source, an HTTP client, and per-state limits. Trusted
 package code and its third-party dependencies use normal Lua libraries and
 `require`. Host operations live in `require("pa")`. An entry returns a callable
 table whose direct functions can form Eval's `self`; caller Imports expose
-configured external entries. Only bytes cross runtime boundaries.
+configured external entries. Root and Import calls exchange bytes. Eval views
+copy nil, booleans, numbers, strings, and acyclic tables between isolated Lua
+states; table results are rendered as Lua text.
 
 The TypeScript SDK targets Effect 4. Each scoped `agent call` process
 reads one JSON request from stdin and writes one JSON result to stdout. The SDK
