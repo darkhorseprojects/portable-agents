@@ -9,6 +9,32 @@ const EvalResult = struct {
     value: []u8,
 };
 
+const format_source =
+    \\return function(value)
+    \\ local function text(item,nested)
+    \\  local kind=type(item)
+    \\  if kind=="string" then return nested and string.format("%q",item) or item end
+    \\  if kind~="table" then return tostring(item) end
+    \\  local size,array=#item,true
+    \\  for key in pairs(item) do array=array and math.type(key)=="integer" and key>=1 and key<=size end
+    \\  local result={}
+    \\  if array then
+    \\   for index=1,size do result[index]=text(item[index],true) end
+    \\  else
+    \\   local keys={}
+    \\   for key in pairs(item) do
+    \\    assert(type(key)=="string","unsupported result key")
+    \\    keys[#keys+1]=key
+    \\   end
+    \\   table.sort(keys)
+    \\   for _,key in ipairs(keys) do result[#result+1]=key.."="..text(item[key],true) end
+    \\  end
+    \\  return "{"..table.concat(result,",").."}"
+    \\ end
+    \\ return text(value,false)
+    \\end
+;
+
 pub fn install(owner: *runtime.Runtime) !void {
     owner.state.pushFunction(zlua.wrap(installDispatch));
     owner.state.pushLightUserdata(owner);
@@ -145,7 +171,7 @@ fn execute(state: *zlua.Lua) !i32 {
     for (selection.*) |name| {
         const function = owner.entry.?.member(name) orelse return error.InvalidEvalView;
         _ = state.pushString(name);
-        module.pushProxy(state, function, &owner.config, 1);
+        module.pushNativeProxy(state, function, &owner.config);
         state.setTableRaw(self);
     }
     state.createTable(0, @intCast(owner.imports.items.len));
@@ -182,5 +208,12 @@ fn execute(state: *zlua.Lua) !i32 {
     state.pushValue(self);
     _ = state.pushString(input.*);
     state.call(.{ .args = 2, .results = 1 });
+    if (state.typeOf(-1) != .string) {
+        try state.loadBuffer(format_source, "eval result", .text);
+        state.call(.{ .args = 0, .results = 1 });
+        state.pushValue(-2);
+        state.call(.{ .args = 1, .results = 1 });
+        state.remove(-2);
+    }
     return 1;
 }
