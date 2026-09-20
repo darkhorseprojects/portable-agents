@@ -109,10 +109,13 @@ fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const 
     }
     try state.loadBuffer(
         \\local imports=...
-        \\local type,error,tostring=type,error,tostring
+        \\local type,error,tostring,setmetatable=type,error,tostring,setmetatable
         \\string.dump=nil
-        \\local env={assert=assert,error=error,ipairs=ipairs,next=next,pairs=pairs,
-        \\ rawequal=rawequal,rawget=rawget,rawlen=rawlen,rawset=rawset,select=select,setmetatable=setmetatable,
+        \\local function callable(value,call)
+        \\ return setmetatable(value,{__call=call,__metatable=false})
+        \\end
+        \\local env={assert=assert,callable=callable,error=error,ipairs=ipairs,next=next,pairs=pairs,
+        \\ rawequal=rawequal,rawget=rawget,rawlen=rawlen,rawset=rawset,select=select,
         \\ tonumber=tonumber,tostring=tostring,type=type,math=math,string=string,table=table,utf8=utf8}
         \\env._G=env
         \\function env.require(name)

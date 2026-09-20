@@ -9,7 +9,8 @@ package code and its third-party dependencies use normal Lua libraries and
 table whose direct functions can form Eval's `self`; caller Imports expose
 configured external entries. Root and Import calls exchange bytes. Eval views
 copy nil, booleans, numbers, strings, and acyclic tables between isolated Lua
-states; table results are rendered as Lua text.
+states; table results are rendered as Lua text. Eval can make caller-owned
+tables callable, but exposes no general metatable access.
 
 The TypeScript SDK targets Effect 4. Each scoped `agent call` process
 reads one JSON request from stdin and writes one JSON result to stdout. The SDK
