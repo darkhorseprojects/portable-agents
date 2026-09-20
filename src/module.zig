@@ -4,6 +4,10 @@ const lua_state = @import("lua.zig");
 
 const Allocator = std.mem.Allocator;
 
+fn lessMember(_: void, left: Member, right: Member) bool {
+    return std.mem.lessThan(u8, left.name, right.name);
+}
+
 pub const Callable = struct {
     state: *zlua.Lua,
     reference: i32,
@@ -57,6 +61,7 @@ pub const Resolved = struct {
             };
             lua.pop(1);
         }
+        std.sort.insertion(Member, members.items, {}, lessMember);
         return .{
             .callable = Callable.capture(lua, table),
             .members = try members.toOwnedSlice(allocator),
@@ -69,22 +74,19 @@ pub const Resolved = struct {
         allocator.free(self.members);
     }
 
-    pub fn member(self: *const Resolved, name: []const u8) ?*const Callable {
-        for (self.members) |*member_value| {
-            if (std.mem.eql(u8, member_value.name, name)) return &member_value.callable;
+    pub fn select(self: Resolved, index: i32, name: []const u8) ?usize {
+        for (self.members, 0..) |member_value, member_index| {
+            if (!std.mem.eql(u8, member_value.name, name)) continue;
+            const lua = self.callable.state;
+            const value = lua.absIndex(index);
+            _ = lua.getIndexRaw(zlua.registry_index, self.callable.reference);
+            _ = lua.pushString(name);
+            _ = lua.getTableRaw(-2);
+            const matches = lua.equalRaw(value, -1);
+            lua.pop(2);
+            return if (matches) member_index else null;
         }
         return null;
-    }
-
-    pub fn matches(self: Resolved, index: i32, name: []const u8) bool {
-        const lua = self.callable.state;
-        const value = lua.absIndex(index);
-        _ = lua.getIndexRaw(zlua.registry_index, self.callable.reference);
-        _ = lua.pushString(name);
-        _ = lua.getTableRaw(-2);
-        const result = lua.equalRaw(value, -1);
-        lua.pop(2);
-        return result;
     }
 };
 
@@ -147,10 +149,12 @@ fn callNativeProxy(lua: *zlua.Lua) !i32 {
     const config: *const []const u8 = @ptrCast(@alignCast(lua.toPointer(zlua.Lua.upvalueIndex(2)).?));
     const target = value.state;
     const arguments = lua.getTop();
-    target.pushFunction(zlua.wrap(nativeTraceback));
+    const top = target.getTop();
+    defer target.setTop(top);
+    target.pushFunction(zlua.wrap(lua_state.traceback));
     const message_handler = target.getTop();
     _ = target.getIndexRaw(zlua.registry_index, value.reference);
-    for (1..@as(usize, @intCast(arguments)) + 1) |index| try copyValue(lua, target, @intCast(index), 0);
+    for (1..@as(usize, @intCast(arguments)) + 1) |index| try lua_state.transfer(lua, target, @intCast(index), 0);
     _ = target.pushString(config.*);
     target.protectedCall(.{ .args = arguments + 1, .results = 1, .msg_handler = message_handler }) catch {
         if (lua_state.control(target).cancellation.canceled()) {
@@ -158,43 +162,10 @@ fn callNativeProxy(lua: *zlua.Lua) !i32 {
             return error.Canceled;
         }
         _ = lua.pushString(target.toString(-1) catch "LuaFailure");
-        target.pop(2);
         lua.raiseError();
     };
-    defer target.pop(2);
-    try copyValue(target, lua, -1, 0);
+    try lua_state.transfer(target, lua, -1, 0);
     return 1;
-}
-
-fn nativeTraceback(lua: *zlua.Lua) i32 {
-    const message = if (lua.typeOf(1) == .string) lua.toString(1) catch null else null;
-    lua.traceback(lua, message, 1);
-    return 1;
-}
-
-fn copyValue(source: *zlua.Lua, target: *zlua.Lua, index: i32, depth: u8) !void {
-    if (depth == 64) return error.ValueDepthExceeded;
-    switch (source.typeOf(index)) {
-        .nil => target.pushNil(),
-        .boolean => target.pushBoolean(source.toBoolean(index)),
-        .number => if (source.isInteger(index))
-            target.pushInteger(try source.toInteger(index))
-        else
-            target.pushNumber(try source.toNumber(index)),
-        .string => _ = target.pushString(try source.toString(index)),
-        .table => {
-            target.createTable(0, 0);
-            const table = source.absIndex(index);
-            source.pushNil();
-            while (source.next(table)) {
-                try copyValue(source, target, -2, depth + 1);
-                try copyValue(source, target, -1, depth + 1);
-                target.setTableRaw(-3);
-                source.pop(1);
-            }
-        },
-        else => return error.UnsupportedValue,
-    }
 }
 
 fn invoke(lua: *zlua.Lua) !i32 {

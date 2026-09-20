@@ -75,6 +75,42 @@ pub fn bytes(state: *zlua.Lua, index: i32) ![]const u8 {
     return if (state.typeOf(index) == .string) state.toString(index) else error.ExpectedBytes;
 }
 
+pub fn traceback(state: *zlua.Lua) i32 {
+    const message = if (state.typeOf(1) == .string) state.toString(1) catch null else null;
+    state.traceback(state, message, 1);
+    return 1;
+}
+
+pub fn transfer(source: *zlua.Lua, target: *zlua.Lua, index: i32, depth: u8) !void {
+    if (depth == 64) return error.ValueDepthExceeded;
+    try source.checkStack(2);
+    try target.checkStack(2);
+    switch (source.typeOf(index)) {
+        .nil => target.pushNil(),
+        .boolean => target.pushBoolean(source.toBoolean(index)),
+        .number => if (source.isInteger(index))
+            target.pushInteger(try source.toInteger(index))
+        else
+            target.pushNumber(try source.toNumber(index)),
+        .string => _ = target.pushString(try source.toString(index)),
+        .table => {
+            target.createTable(0, 0);
+            const table = source.absIndex(index);
+            source.pushNil();
+            while (source.next(table)) {
+                const key = source.typeOf(-2);
+                if (key != .string and (key != .number or !source.isInteger(-2) or (try source.toInteger(-2)) < 1))
+                    return error.UnsupportedValueKey;
+                try transfer(source, target, -2, depth + 1);
+                try transfer(source, target, -1, depth + 1);
+                target.setTableRaw(-3);
+                source.pop(1);
+            }
+        },
+        else => return error.UnsupportedValue,
+    }
+}
+
 fn hook(state: *zlua.Lua, _: zlua.Event, _: *zlua.DebugInfo) void {
     const value = control(state);
     value.io.checkCancel() catch {
