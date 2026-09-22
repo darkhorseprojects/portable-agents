@@ -9,6 +9,15 @@ const module = @import("module.zig");
 
 const Allocator = std.mem.Allocator;
 
+pub const Emitter = struct {
+    context: *anyopaque,
+    write: *const fn (*anyopaque, []const u8) anyerror!void,
+
+    fn emit(self: Emitter, bytes: []const u8) !void {
+        try self.write(self.context, bytes);
+    }
+};
+
 const LoadedImport = struct {
     name: []const u8,
     runtime: Runtime,
@@ -24,15 +33,16 @@ pub const Runtime = struct {
     state: *zlua.Lua,
     imports: std.ArrayList(LoadedImport),
     entry: ?module.Resolved,
+    emitter: ?Emitter,
 
-    pub fn init(self: *Runtime, allocator: Allocator, agent: anytype, config: []const u8, imports: anytype, cancellation: *lua.Cancellation) !void {
-        try self.open(allocator, agent.client.io, agent.limits, cancellation, &agent.client, &agent.image, config);
+    pub fn init(self: *Runtime, allocator: Allocator, agent: anytype, config: []const u8, imports: anytype, cancellation: *lua.Cancellation, emitter: ?Emitter) !void {
+        try self.open(allocator, agent.client.io, agent.limits, cancellation, &agent.client, &agent.image, config, emitter);
         errdefer self.deinit();
         try self.imports.ensureTotalCapacity(allocator, imports.len);
         for (imports) |item| {
             const loaded = self.imports.addOneAssumeCapacity();
             loaded.* = .{ .name = item.name, .runtime = undefined };
-            loaded.runtime.open(allocator, item.agent.client.io, item.agent.limits, cancellation, &item.agent.client, &item.agent.image, item.config) catch |err| {
+            loaded.runtime.open(allocator, item.agent.client.io, item.agent.limits, cancellation, &item.agent.client, &item.agent.image, item.config, emitter) catch |err| {
                 _ = self.imports.pop();
                 return err;
             };
@@ -81,7 +91,7 @@ pub const Runtime = struct {
         self.imports.deinit(self.quota.backing);
     }
 
-    fn open(self: *Runtime, allocator: Allocator, io: std.Io, limits: lua.Limits, cancellation: *lua.Cancellation, client: *std.http.Client, image: *const Image, config: []const u8) !void {
+    fn open(self: *Runtime, allocator: Allocator, io: std.Io, limits: lua.Limits, cancellation: *lua.Cancellation, client: *std.http.Client, image: *const Image, config: []const u8, emitter: ?Emitter) !void {
         self.* = .{
             .limits = limits,
             .client = client,
@@ -92,6 +102,7 @@ pub const Runtime = struct {
             .state = undefined,
             .imports = .empty,
             .entry = null,
+            .emitter = emitter,
         };
         self.state = try zlua.Lua.init(self.quota.allocator());
         errdefer self.state.deinit();
@@ -102,7 +113,7 @@ pub const Runtime = struct {
     }
 
     fn openFrom(self: *Runtime, source: *const Runtime) !void {
-        try self.open(source.quota.backing, source.control.io, source.limits, source.control.cancellation, source.client, source.image, source.config);
+        try self.open(source.quota.backing, source.control.io, source.limits, source.control.cancellation, source.client, source.image, source.config, source.emitter);
     }
 };
 
@@ -119,6 +130,9 @@ fn initialize(state: *zlua.Lua) !i32 {
     try fs.install(state, &self.image.directory);
     http.install(state, self.client);
     process.install(state);
+    state.pushLightUserdata(self);
+    state.pushClosure(zlua.wrap(emit), 1);
+    state.setField(-2, "emit");
     try state.loadBuffer(
         \\local pa=...
         \\local type,error,next,setmetatable,require=type,error,next,setmetatable,require
@@ -150,6 +164,13 @@ fn initialize(state: *zlua.Lua) !i32 {
     state.pushValue(-2);
     state.call(.{ .args = 1 });
     state.pop(1);
+    return 0;
+}
+
+fn emit(state: *zlua.Lua) !i32 {
+    if (state.getTop() != 1) return error.InvalidArgument;
+    const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
+    if (self.emitter) |emitter| try emitter.emit(try lua.bytes(state, 1));
     return 0;
 }
 

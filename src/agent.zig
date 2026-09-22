@@ -32,10 +32,14 @@ pub const Agent = struct {
     }
 
     pub fn call(self: *Agent, allocator: Allocator, input: []const u8, config: []const u8, imports: []const Import) ![]u8 {
+        return self.callWithEmitter(allocator, input, config, imports, null);
+    }
+
+    pub fn callWithEmitter(self: *Agent, allocator: Allocator, input: []const u8, config: []const u8, imports: []const Import, emitter: ?runtime.Emitter) ![]u8 {
         for (imports) |item| if (item.agent == self) return error.LocalImport;
         var cancellation: lua.Cancellation = .{};
         var owner: runtime.Runtime = undefined;
-        try owner.init(allocator, self, config, imports, &cancellation);
+        try owner.init(allocator, self, config, imports, &cancellation, emitter);
         defer owner.deinit();
         try eval.install(&owner);
         try owner.resolve();

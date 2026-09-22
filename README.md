@@ -12,9 +12,11 @@ copy nil, booleans, numbers, strings, and acyclic tables between isolated Lua
 states; table results are rendered as Lua text. Eval can make caller-owned
 tables callable, but exposes no general metatable access.
 
-The TypeScript SDK targets Effect 4. Each scoped `agent call` process
-reads one JSON request from stdin and writes one JSON result to stdout. The SDK
-contains no FFI or runtime-specific APIs.
+The TypeScript SDK targets Effect 4. Each scoped `agent call` process reads one
+protocol-1 JSON request from stdin and writes newline-delimited result frames to
+stdout. `Agent.call` returns the terminal bytes; `Agent.stream` also exposes
+opaque bytes emitted incrementally through `pa.emit`. The SDK contains no FFI or
+runtime-specific APIs.
 
 Requires Zig 0.16.x. The wiki documents the package language, authority model,
 and embedding APIs.

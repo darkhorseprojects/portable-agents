@@ -20,31 +20,61 @@ const WireImport = struct {
 
 const Request = struct {
     version: u8,
+    emits: bool,
     agents: []const WireAgent,
     imports: []const WireImport = &.{},
     input: []const u8,
     config: []const u8,
 };
 
+const Output = struct {
+    allocator: Allocator,
+    io: std.Io,
+    writer: *std.Io.Writer,
+    mutex: std.Io.Mutex = .init,
+
+    fn emit(context: *anyopaque, bytes: []const u8) !void {
+        const self: *Output = @ptrCast(@alignCast(context));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const encoded = try self.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
+        defer self.allocator.free(encoded);
+        try write(self.writer, .{ .emit = std.base64.standard.Encoder.encode(encoded, bytes) });
+    }
+
+    fn result(self: *Output, bytes: []const u8) !void {
+        const encoded = try self.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
+        defer self.allocator.free(encoded);
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        try write(self.writer, .{ .result = .{ .output = std.base64.standard.Encoder.encode(encoded, bytes) } });
+    }
+
+    fn failure(self: *Output, err: anyerror) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        try write(self.writer, .{ .result = .{ .@"error" = @errorName(err) } });
+    }
+};
+
 pub fn call(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, writer: *std.Io.Writer) !void {
-    const output = run(allocator, io, reader) catch |err| {
-        try write(writer, .{ .result = .{ .@"error" = @errorName(err) } });
+    var output: Output = .{ .allocator = allocator, .io = io, .writer = writer };
+    const bytes = run(allocator, io, reader, &output) catch |err| {
+        try output.failure(err);
         return;
     };
-    defer allocator.free(output);
-    const encoded = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(output.len));
-    defer allocator.free(encoded);
-    try write(writer, .{ .result = .{ .output = std.base64.standard.Encoder.encode(encoded, output) } });
+    defer allocator.free(bytes);
+    try output.result(bytes);
 }
 
-fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader) ![]u8 {
+fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, output: *Output) ![]u8 {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const scratch = arena.allocator();
     const bytes = try reader.allocRemaining(scratch, .unlimited);
     if (bytes.len == 0) return error.MissingRequest;
     const request = try std.json.parseFromSliceLeaky(Request, scratch, bytes, .{});
-    if (request.version != 4 or request.agents.len == 0) return error.InvalidProtocol;
+    if (request.version != 1 or request.agents.len == 0) return error.InvalidProtocol;
     const input = try decodeBase64(scratch, request.input);
     const config = try decodeBase64(scratch, request.config);
     const agents = try scratch.alloc(pa.Agent, request.agents.len);
@@ -73,7 +103,8 @@ fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader) ![]u8 {
         agent.* = try pa.Agent.init(allocator, io, wire.sourceDir, wire.entryModule, limits);
         initialized += 1;
     }
-    return agents[0].call(allocator, input, config, imports);
+    const emitter: ?pa.Emitter = if (request.emits) .{ .context = output, .write = Output.emit } else null;
+    return agents[0].callWithEmitter(allocator, input, config, imports, emitter);
 }
 
 fn decodeBase64(allocator: Allocator, encoded: []const u8) ![]u8 {
@@ -84,5 +115,6 @@ fn decodeBase64(allocator: Allocator, encoded: []const u8) ![]u8 {
 
 fn write(writer: *std.Io.Writer, value: anytype) !void {
     try std.json.Stringify.value(value, .{}, writer);
+    try writer.writeAll("\n");
     try writer.flush();
 }

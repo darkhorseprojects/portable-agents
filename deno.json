@@ -1,4 +1,7 @@
 {
+  "name": "@darkhorseprojects/portable-agents",
+  "version": "0.1.0",
+  "exports": "./sdk/mod.ts",
   "imports": {
     "effect": "npm:effect@4.0.0-rc.113",
     "effect/unstable/process": "npm:effect@4.0.0-rc.113/unstable/process"

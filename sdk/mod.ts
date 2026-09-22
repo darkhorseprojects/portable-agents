@@ -3,13 +3,16 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const fail = (code: string) => new AgentError({ code });
 
-const Response = Schema.fromJsonString(Schema.Struct({
-  result: Schema.Union([
-    Schema.Struct({ output: Schema.Uint8ArrayFromBase64 }),
-    Schema.Struct({ error: Schema.String }),
-  ]),
-}));
-const decodeResponse = Schema.decodeUnknownEffect(Response, {
+const Frame = Schema.fromJsonString(Schema.Union([
+  Schema.Struct({ emit: Schema.Uint8ArrayFromBase64 }),
+  Schema.Struct({
+    result: Schema.Union([
+      Schema.Struct({ output: Schema.Uint8ArrayFromBase64 }),
+      Schema.Struct({ error: Schema.String }),
+    ]),
+  }),
+]));
+const decodeFrame = Schema.decodeUnknownEffect(Frame, {
   onExcessProperty: "error",
 });
 
@@ -25,7 +28,13 @@ export interface AgentOptions {
   readonly entryModule: string;
   readonly memoryBytes?: number;
   readonly instructions?: bigint;
+  readonly cwd?: string;
+  readonly environment?: Readonly<Record<string, string>>;
 }
+
+export type AgentEvent =
+  | { readonly type: "emit"; readonly output: Uint8Array }
+  | { readonly type: "result"; readonly output: Uint8Array };
 
 export class AgentError extends Schema.TaggedError<AgentError>()("AgentError", {
   code: Schema.String,
@@ -42,6 +51,14 @@ export class Agent {
     imports: readonly Import[] = [],
   ) {
     return call(this, input, config, imports);
+  }
+
+  stream(
+    input: Uint8Array,
+    config: Uint8Array,
+    imports: readonly Import[] = [],
+  ) {
+    return events(this, input, config, imports, true);
   }
 }
 
@@ -62,44 +79,85 @@ const call = Effect.fn("Agent.call")(
     config: Uint8Array,
     imports: readonly Import[],
   ) {
-    const request = yield* Effect.try({
-      try: () =>
-        new TextEncoder().encode(
-          JSON.stringify(encode(agent, input, config, imports)),
-        ),
-      catch: () => fail("InvalidImport"),
-    });
-    const handle = yield* ChildProcess.make(agent.spec.executable, ["call"], {
-      stdin: Stream.make(request),
-      stderr: "inherit",
-      forceKillAfter: "1 second",
-    });
-    const response = yield* handle.stdout.pipe(
-      Stream.decodeText(),
-      Stream.mkString,
+    const result = yield* events(agent, input, config, imports, false).pipe(
+      Stream.runFold(
+        () => undefined as Uint8Array | undefined,
+        (_, event: AgentEvent) =>
+          event.type === "result" ? event.output : undefined,
+      ),
     );
-    if ((yield* handle.exitCode) !== ChildProcessSpawner.ExitCode(0)) {
-      return yield* fail("ProcessFailure");
-    }
-    const result = yield* decodeResponse(response).pipe(
-      Effect.mapError(() => fail("InvalidProtocol")),
-    );
-    if ("error" in result.result) {
-      return yield* fail(result.result.error || "AgentFailure");
-    }
-    return result.result.output;
+    if (result === undefined) return yield* fail("InvalidProtocol");
+    return result;
   },
-  Effect.scoped,
   Effect.mapError((error) =>
     error instanceof AgentError ? error : fail("ProcessFailure")
   ),
 );
+
+function events(
+  agent: Agent,
+  input: Uint8Array,
+  config: Uint8Array,
+  imports: readonly Import[],
+  emits: boolean,
+) {
+  return Stream.unwrap(Effect.gen(function* () {
+    const request = yield* Effect.try({
+      try: () =>
+        new TextEncoder().encode(
+          JSON.stringify(encode(agent, input, config, imports, emits)),
+        ),
+      catch: () => fail("InvalidImport"),
+    });
+    const handle = yield* ChildProcess.make(agent.spec.executable, ["call"], {
+      cwd: agent.spec.cwd,
+      env: agent.spec.environment ? { ...agent.spec.environment } : undefined,
+      stdin: Stream.make(request),
+      stderr: "inherit",
+      forceKillAfter: "1 second",
+    });
+    let terminal = false;
+    const frames = handle.stdout.pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.filter((line) => line.length > 0),
+      Stream.mapEffect((line) =>
+        Effect.gen(function* () {
+          if (terminal) return yield* fail("InvalidProtocol");
+          const frame = yield* decodeFrame(line).pipe(
+            Effect.mapError(() => fail("InvalidProtocol")),
+          );
+          if ("emit" in frame) {
+            return { type: "emit", output: frame.emit } as const;
+          }
+          terminal = true;
+          if ("error" in frame.result) {
+            return yield* fail(frame.result.error || "AgentFailure");
+          }
+          return { type: "result", output: frame.result.output } as const;
+        })
+      ),
+    );
+    const completed = Stream.fromEffect(Effect.gen(function* () {
+      if ((yield* handle.exitCode) !== ChildProcessSpawner.ExitCode(0)) {
+        return yield* fail("ProcessFailure");
+      }
+      if (!terminal) return yield* fail("InvalidProtocol");
+    })).pipe(Stream.drain);
+    return frames.pipe(Stream.concat(completed));
+  })).pipe(
+    Stream.mapError((error) =>
+      error instanceof AgentError ? error : fail("ProcessFailure")
+    ),
+  );
+}
 
 function encode(
   root: Agent,
   input: Uint8Array,
   config: Uint8Array,
   values: readonly Import[],
+  emits: boolean,
 ) {
   const agents: Array<{
     sourceDir: string;
@@ -130,7 +188,8 @@ function encode(
     config: Encoding.encodeBase64(value.config),
   }));
   return {
-    version: 4,
+    version: 1,
+    emits,
     agents,
     imports,
     input: Encoding.encodeBase64(input),
