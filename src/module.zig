@@ -4,10 +4,6 @@ const lua_state = @import("lua.zig");
 
 const Allocator = std.mem.Allocator;
 
-fn lessMember(_: void, left: Member, right: Member) bool {
-    return std.mem.lessThan(u8, left.name, right.name);
-}
-
 pub const Callable = struct {
     state: *zlua.Lua,
     reference: i32,
@@ -61,7 +57,6 @@ pub const Resolved = struct {
             };
             lua.pop(1);
         }
-        std.sort.insertion(Member, members.items, {}, lessMember);
         return .{
             .callable = Callable.capture(lua, table),
             .members = try members.toOwnedSlice(allocator),

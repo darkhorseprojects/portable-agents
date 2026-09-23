@@ -2,6 +2,7 @@ const std = @import("std");
 const zlua = @import("zlua");
 
 const Allocator = std.mem.Allocator;
+const hook_interval = 1_000;
 
 pub const Limits = struct {
     memory_bytes: usize = 16 * 1024 * 1024,
@@ -60,7 +61,7 @@ pub const Control = struct {
 
 pub fn attach(state: *zlua.Lua, value: *Control) void {
     @as(**Control, @ptrCast(@alignCast(state.getExtraSpace().ptr))).* = value;
-    state.setHook(zlua.wrap(hook), .{ .count = true }, 1000);
+    state.setHook(zlua.wrap(hook), .{ .count = true }, hook_interval);
 }
 
 pub fn control(state: *zlua.Lua) *Control {
@@ -117,6 +118,6 @@ fn hook(state: *zlua.Lua, _: zlua.Event, _: *zlua.DebugInfo) void {
         value.cancellation.cancel();
         state.raiseErrorStr("canceled", .{});
     };
-    if (value.remaining_instructions < 1000) state.raiseErrorStr("instruction limit exceeded", .{});
-    value.remaining_instructions -= 1000;
+    if (value.remaining_instructions < hook_interval) state.raiseErrorStr("instruction limit exceeded", .{});
+    value.remaining_instructions -= hook_interval;
 }

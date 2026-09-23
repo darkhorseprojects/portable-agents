@@ -12,7 +12,7 @@ const Module = struct {
 pub const Image = struct {
     arena: std.heap.ArenaAllocator,
     directory: std.Io.Dir,
-    source_dir: []const u8,
+    native_cpath: []const u8,
     modules: []const Module,
     entry: [:0]const u8,
 
@@ -23,14 +23,18 @@ pub const Image = struct {
         var image = Image{
             .arena = std.heap.ArenaAllocator.init(allocator),
             .directory = directory,
-            .source_dir = undefined,
+            .native_cpath = undefined,
             .modules = &.{},
-
             .entry = undefined,
         };
         errdefer image.arena.deinit();
         const output = image.arena.allocator();
-        image.source_dir = try output.dupe(u8, source_dir);
+        var path: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const length = try directory.realPath(io, &path);
+        const extension = if (@import("builtin").os.tag == .windows) "dll" else "so";
+        image.native_cpath = try std.fmt.allocPrint(output, "{s}{c}native{c}?.{s}", .{
+            path[0..length], std.fs.path.sep, std.fs.path.sep, extension,
+        });
         image.entry = try output.dupeZ(u8, entry_module);
         var walker = try directory.walk(allocator);
         defer walker.deinit();

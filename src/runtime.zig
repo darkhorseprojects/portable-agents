@@ -120,13 +120,10 @@ pub const Runtime = struct {
 fn initialize(state: *zlua.Lua) !i32 {
     const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(1).?)));
     state.openLibs();
-    const extension = if (@import("builtin").os.tag == .windows) "dll" else "so";
-    const native_path = try std.fmt.allocPrint(state.allocator(), "{s}{c}native{c}?.{s}", .{
-        self.image.source_dir, std.fs.path.sep, std.fs.path.sep, extension,
-    });
-    defer state.allocator().free(native_path);
     _ = state.getGlobal("package");
-    _ = state.pushString(native_path);
+    _ = state.pushString("");
+    state.setField(-2, "path");
+    _ = state.pushString(self.image.native_cpath);
     state.setField(-2, "cpath");
     state.pop(1);
     _ = state.getField(zlua.registry_index, zlua.preload_table);
