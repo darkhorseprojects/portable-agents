@@ -94,7 +94,7 @@ pub fn pushModuleProxy(lua: *zlua.Lua, value: *const Resolved, config: *const []
     lua.createTable(0, @intCast(value.members.len));
     for (value.members) |*member_value| {
         _ = lua.pushString(member_value.name);
-        pushProxy(lua, &member_value.callable, config, 1);
+        pushNativeProxy(lua, &member_value.callable, config, true);
         lua.setTableRaw(-3);
     }
     lua.createTable(0, 2);
@@ -118,10 +118,11 @@ pub fn pushProxy(lua: *zlua.Lua, value: *const Callable, config: *const []const 
     lua.pushClosure(zlua.wrap(callProxy), 3);
 }
 
-pub fn pushNativeProxy(lua: *zlua.Lua, value: *const Callable, config: *const []const u8) void {
+pub fn pushNativeProxy(lua: *zlua.Lua, value: *const Callable, config: *const []const u8, prepend_config: bool) void {
     lua.pushLightUserdata(@ptrCast(value));
     lua.pushLightUserdata(@ptrCast(config));
-    lua.pushClosure(zlua.wrap(callNativeProxy), 2);
+    lua.pushBoolean(prepend_config);
+    lua.pushClosure(zlua.wrap(callNativeProxy), 3);
 }
 
 fn loadProxy(lua: *zlua.Lua) i32 {
@@ -154,8 +155,10 @@ fn callNativeProxy(lua: *zlua.Lua) !i32 {
     target.pushFunction(zlua.wrap(lua_state.traceback));
     const message_handler = target.getTop();
     _ = target.getIndexRaw(zlua.registry_index, value.reference);
+    const prepend_config = lua.toBoolean(zlua.Lua.upvalueIndex(3));
+    if (prepend_config) _ = target.pushString(config.*);
     for (1..@as(usize, @intCast(arguments)) + 1) |index| try lua_state.transfer(lua, target, @intCast(index), 0);
-    _ = target.pushString(config.*);
+    if (!prepend_config) _ = target.pushString(config.*);
     target.protectedCall(.{ .args = arguments + 1, .results = 1, .msg_handler = message_handler }) catch {
         if (lua_state.control(target).cancellation.canceled()) {
             lua_state.control(lua).cancellation.cancel();

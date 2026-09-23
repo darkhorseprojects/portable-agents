@@ -97,7 +97,7 @@ fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const 
     for (selection) |index| {
         const member = &owner.entry.?.members[index];
         _ = state.pushString(member.name);
-        module.pushNativeProxy(state, &member.callable, &owner.config);
+        module.pushNativeProxy(state, &member.callable, &owner.config, false);
         state.setTableRaw(self);
     }
     state.createTable(0, @intCast(owner.imports.items.len));

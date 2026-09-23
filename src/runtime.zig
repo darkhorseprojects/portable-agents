@@ -120,6 +120,15 @@ pub const Runtime = struct {
 fn initialize(state: *zlua.Lua) !i32 {
     const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(1).?)));
     state.openLibs();
+    const extension = if (@import("builtin").os.tag == .windows) "dll" else "so";
+    const native_path = try std.fmt.allocPrint(state.allocator(), "{s}{c}native{c}?.{s}", .{
+        self.image.source_dir, std.fs.path.sep, std.fs.path.sep, extension,
+    });
+    defer state.allocator().free(native_path);
+    _ = state.getGlobal("package");
+    _ = state.pushString(native_path);
+    state.setField(-2, "cpath");
+    state.pop(1);
     _ = state.getField(zlua.registry_index, zlua.preload_table);
     for (self.image.modules) |item| {
         try state.loadBuffer(item.bytecode, item.name, .binary);
@@ -133,6 +142,9 @@ fn initialize(state: *zlua.Lua) !i32 {
     state.pushLightUserdata(self);
     state.pushClosure(zlua.wrap(emit), 1);
     state.setField(-2, "emit");
+    state.pushLightUserdata(self);
+    state.pushClosure(zlua.wrap(listImports), 1);
+    state.setField(-2, "imports");
     try state.loadBuffer(
         \\local pa=...
         \\local type,error,next,setmetatable,require=type,error,next,setmetatable,require
@@ -172,6 +184,17 @@ fn emit(state: *zlua.Lua) !i32 {
     const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
     if (self.emitter) |emitter| try emitter.emit(try lua.bytes(state, 1));
     return 0;
+}
+
+fn listImports(state: *zlua.Lua) !i32 {
+    if (state.getTop() != 0) return error.InvalidArgument;
+    const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
+    state.createTable(@intCast(self.imports.items.len), 0);
+    for (self.imports.items, 1..) |item, index| {
+        _ = state.pushString(item.name);
+        state.setIndex(-2, @intCast(index));
+    }
+    return 1;
 }
 
 fn publishImport(state: *zlua.Lua) !i32 {

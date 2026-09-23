@@ -12,6 +12,7 @@ const Module = struct {
 pub const Image = struct {
     arena: std.heap.ArenaAllocator,
     directory: std.Io.Dir,
+    source_dir: []const u8,
     modules: []const Module,
     entry: [:0]const u8,
 
@@ -22,11 +23,14 @@ pub const Image = struct {
         var image = Image{
             .arena = std.heap.ArenaAllocator.init(allocator),
             .directory = directory,
+            .source_dir = undefined,
             .modules = &.{},
+
             .entry = undefined,
         };
         errdefer image.arena.deinit();
         const output = image.arena.allocator();
+        image.source_dir = try output.dupe(u8, source_dir);
         image.entry = try output.dupeZ(u8, entry_module);
         var walker = try directory.walk(allocator);
         defer walker.deinit();
