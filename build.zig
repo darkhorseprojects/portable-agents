@@ -27,5 +27,8 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "pa", .module = pa }},
         }),
     });
+    if (system_lua and target.result.os.tag != .windows) {
+        exe.root_module.addRPathSpecial(if (target.result.os.tag == .macos) "@loader_path" else "$ORIGIN");
+    }
     b.installArtifact(exe);
 }
