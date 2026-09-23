@@ -33,53 +33,38 @@ const Output = struct {
     writer: *std.Io.Writer,
     mutex: std.Io.Mutex = .init,
 
-    fn emit(context: *anyopaque, kind: pa.Emitter.Kind, bytes: []const u8) !void {
+    fn event(context: *anyopaque, value: pa.Event) !void {
         const self: *Output = @ptrCast(@alignCast(context));
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        const encoded = try self.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
-        defer self.allocator.free(encoded);
-        const value = std.base64.standard.Encoder.encode(encoded, bytes);
-        switch (kind) {
-            .message => try write(self.writer, .{ .emit = value }),
-            .content => try write(self.writer, .{ .delta = .{ .kind = "content", .output = value } }),
-            .reasoning => try write(self.writer, .{ .delta = .{ .kind = "reasoning", .output = value } }),
+        switch (value) {
+            .message, .append => |bytes| {
+                const encoded = try self.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
+                defer self.allocator.free(encoded);
+                const text = std.base64.standard.Encoder.encode(encoded, bytes);
+                if (value == .message) try write(self.writer, .{ .emit = text }) else try write(self.writer, .{ .append = text });
+            },
+            .log => |stage| try write(self.writer, .{ .log = stage }),
+            .traceback => |detail| try write(self.writer, .{ .traceback = detail }),
         }
     }
 
-    fn diagnostic(context: *anyopaque, kind: pa.Diagnostic.Kind, value: []const u8) !void {
-        const self: *Output = @ptrCast(@alignCast(context));
+    fn finish(self: *Output, outcome: anyerror![]u8) !void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        switch (kind) {
-            .log => try write(self.writer, .{ .log = value }),
-            .traceback => try write(self.writer, .{ .traceback = value }),
-        }
-    }
-
-    fn result(self: *Output, bytes: []const u8) !void {
-        const encoded = try self.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
-        defer self.allocator.free(encoded);
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        try write(self.writer, .{ .result = .{ .output = std.base64.standard.Encoder.encode(encoded, bytes) } });
-    }
-
-    fn failure(self: *Output, err: anyerror) !void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        try write(self.writer, .{ .result = .{ .@"error" = @errorName(err) } });
+        if (outcome) |bytes| {
+            const encoded = try self.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
+            defer self.allocator.free(encoded);
+            try write(self.writer, .{ .result = .{ .output = std.base64.standard.Encoder.encode(encoded, bytes) } });
+        } else |err| try write(self.writer, .{ .result = .{ .@"error" = @errorName(err) } });
     }
 };
 
 pub fn call(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, writer: *std.Io.Writer) !void {
     var output: Output = .{ .allocator = allocator, .io = io, .writer = writer };
-    const bytes = run(allocator, io, reader, &output) catch |err| {
-        try output.failure(err);
-        return;
-    };
-    defer allocator.free(bytes);
-    try output.result(bytes);
+    const outcome = run(allocator, io, reader, &output);
+    defer if (outcome) |bytes| allocator.free(bytes) else |_| {};
+    try output.finish(outcome);
 }
 
 fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, output: *Output) ![]u8 {
@@ -118,8 +103,7 @@ fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, output: *Output
         agent.* = try pa.Agent.init(allocator, io, wire.sourceDir, wire.entryModule, limits);
         initialized += 1;
     }
-    const emitter: ?pa.Emitter = if (request.emits) .{ .context = output, .write = Output.emit } else null;
-    return agents[0].callWithEmitter(allocator, input, config, imports, emitter, .{ .context = output, .write = Output.diagnostic });
+    return agents[0].callWithEvents(allocator, input, config, imports, request.emits, .{ .context = output, .write = Output.event });
 }
 
 fn decodeBase64(allocator: Allocator, encoded: []const u8) ![]u8 {

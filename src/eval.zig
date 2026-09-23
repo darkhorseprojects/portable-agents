@@ -85,7 +85,7 @@ fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const 
     var quota = lua.Quota{ .backing = owner.quota.backing, .max_bytes = owner.limits.memory_bytes };
     const state = try zlua.Lua.init(quota.allocator());
     defer state.deinit();
-    var control = lua.Control{ .io = owner.control.io, .cancellation = owner.control.cancellation, .remaining_instructions = owner.limits.instructions, .diagnostic = owner.control.diagnostic };
+    var control = lua.Control{ .io = owner.control.io, .cancellation = owner.control.cancellation, .remaining_instructions = owner.limits.instructions, .sink = owner.control.sink };
     lua.attach(state, &control);
     state.openBase();
     state.openMath();
@@ -152,31 +152,25 @@ fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const 
     const format = state.absIndex(-1);
     state.pushFunction(zlua.wrap(lua.traceback));
     const message_handler = state.getTop();
-    state.loadBuffer(code, "eval", .text) catch |err| {
-        if (owner.control.cancellation.canceled()) return error.Canceled;
-        if (err != error.LuaSyntax) return err;
-        return .{ .ok = false, .value = try owner.quota.backing.dupe(u8, state.toString(-1) catch unreachable) };
-    };
+    state.loadBuffer(code, "eval", .text) catch |err| return rejected(&owner, state, err, error.LuaSyntax);
     state.pushValue(environment);
     if (state.setUpvalue(-2, 1)) |name| {
         if (!std.mem.eql(u8, name, "_ENV")) return error.InvalidEvalChunk;
     } else |_| state.pop(1);
     state.pushValue(self);
     _ = state.pushString(input);
-    state.protectedCall(.{ .args = 2, .results = 1, .msg_handler = message_handler }) catch |err| {
-        if (owner.control.cancellation.canceled()) return error.Canceled;
-        if (err != error.LuaRuntime) return err;
-        return .{ .ok = false, .value = try owner.quota.backing.dupe(u8, state.toString(-1) catch unreachable) };
-    };
+    state.protectedCall(.{ .args = 2, .results = 1, .msg_handler = message_handler }) catch |err| return rejected(&owner, state, err, error.LuaRuntime);
     if (state.typeOf(-1) != .string) {
         state.pushValue(format);
         state.pushValue(-2);
-        state.protectedCall(.{ .args = 1, .results = 1, .msg_handler = message_handler }) catch |err| {
-            if (owner.control.cancellation.canceled()) return error.Canceled;
-            if (err != error.LuaRuntime) return err;
-            return .{ .ok = false, .value = try owner.quota.backing.dupe(u8, state.toString(-1) catch unreachable) };
-        };
+        state.protectedCall(.{ .args = 1, .results = 1, .msg_handler = message_handler }) catch |err| return rejected(&owner, state, err, error.LuaRuntime);
         state.remove(-2);
     }
     return .{ .ok = true, .value = try owner.quota.backing.dupe(u8, try lua.bytes(state, -1)) };
+}
+
+fn rejected(owner: *runtime.Runtime, state: *zlua.Lua, err: anyerror, expected: anyerror) anyerror!EvalResult {
+    if (owner.control.cancellation.canceled()) return error.Canceled;
+    if (err != expected) return err;
+    return .{ .ok = false, .value = try owner.quota.backing.dupe(u8, state.toString(-1) catch unreachable) };
 }

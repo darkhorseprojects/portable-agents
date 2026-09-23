@@ -53,14 +53,19 @@ pub const Quota = struct {
     }
 };
 
-pub const Diagnostic = struct {
+pub const Event = union(enum) {
+    message: []const u8,
+    append: []const u8,
+    log: []const u8,
+    traceback: []const u8,
+};
+
+pub const EventSink = struct {
     context: *anyopaque,
-    write: *const fn (*anyopaque, Kind, []const u8) anyerror!void,
+    write: *const fn (*anyopaque, Event) anyerror!void,
 
-    pub const Kind = enum { log, traceback };
-
-    pub fn emit(self: Diagnostic, kind: Kind, value: []const u8) !void {
-        try self.write(self.context, kind, value);
+    pub fn emit(self: EventSink, event: Event) !void {
+        try self.write(self.context, event);
     }
 };
 
@@ -68,7 +73,7 @@ pub const Control = struct {
     io: std.Io,
     cancellation: *Cancellation,
     remaining_instructions: u64,
-    diagnostic: ?Diagnostic = null,
+    sink: ?EventSink = null,
 };
 
 pub fn attach(state: *zlua.Lua, value: *Control) void {
@@ -88,9 +93,11 @@ pub fn protect(state: *zlua.Lua, args: zlua.Lua.ProtectedCallArgs) !void {
     if (result) |_| {
         state.remove(handler);
     } else |_| {
-        if (control(state).diagnostic) |diagnostic| {
+        if (control(state).sink) |sink| {
             const detail = state.toString(-1) catch "LuaFailure";
-            diagnostic.emit(.traceback, detail[0..@min(2048, detail.len)]) catch {};
+            var end = @min(2048, detail.len);
+            while (end > 0 and !std.unicode.utf8ValidateSlice(detail[0..end])) end -= 1;
+            sink.emit(.{ .traceback = if (end > 0) detail[0..end] else "LuaFailure" }) catch {};
         }
         state.pop(1);
         state.remove(handler);

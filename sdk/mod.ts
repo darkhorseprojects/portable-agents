@@ -5,15 +5,7 @@ const fail = (code: string) => new AgentError({ code });
 
 const Frame = Schema.fromJsonString(Schema.Union([
   Schema.Struct({ emit: Schema.Uint8ArrayFromBase64 }),
-  Schema.Struct({
-    delta: Schema.Struct({
-      kind: Schema.Union([
-        Schema.Literal("content"),
-        Schema.Literal("reasoning"),
-      ]),
-      output: Schema.Uint8ArrayFromBase64,
-    }),
-  }),
+  Schema.Struct({ append: Schema.Uint8ArrayFromBase64 }),
   Schema.Struct({ log: Schema.String }),
   Schema.Struct({ traceback: Schema.String }),
   Schema.Struct({
@@ -45,11 +37,7 @@ export interface AgentOptions {
 
 export type AgentEvent =
   | { readonly type: "emit"; readonly output: Uint8Array }
-  | {
-    readonly type: "delta";
-    readonly kind: "content" | "reasoning";
-    readonly output: Uint8Array;
-  }
+  | { readonly type: "append"; readonly output: Uint8Array }
   | { readonly type: "log"; readonly stage: string }
   | { readonly type: "traceback"; readonly detail: string }
   | { readonly type: "result"; readonly output: Uint8Array };
@@ -150,8 +138,8 @@ function events(
           if ("emit" in frame) {
             return { type: "emit", output: frame.emit } as const;
           }
-          if ("delta" in frame) {
-            return { type: "delta", ...frame.delta } as const;
+          if ("append" in frame) {
+            return { type: "append", output: frame.append } as const;
           }
           if ("log" in frame) {
             return { type: "log", stage: frame.log } as const;

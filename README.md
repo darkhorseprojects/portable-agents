@@ -22,10 +22,11 @@ callable, but exposes no general metatable access.
 The TypeScript SDK targets Effect 4. Each scoped `agent call` process reads one
 protocol-1 JSON request from stdin and writes newline-delimited result frames to
 stdout. `Agent.call` returns the terminal bytes; `Agent.stream` also exposes
-opaque bytes emitted through `pa.emit` and typed incremental text through
-`pa.emit_delta("content" | "reasoning", bytes)`. Trusted code can record bounded
-stage names with `pa.log`; Lua failures carry a bounded traceback. `pa.http` can
-enforce a response-byte limit and deliver bounded chunks to a Lua callback. The
+opaque bytes emitted through `pa.emit(bytes)` and incremental bytes appended to
+the current message through `pa.emit(bytes, "append")`. PA does not classify
+model reasoning or content. Trusted code can record bounded stage names with
+`pa.log`; Lua failures carry a bounded traceback. `pa.http` can enforce a
+response-byte limit and deliver bounded chunks to a Lua callback. The
 SDK contains no FFI or runtime-specific APIs.
 
 Requires Zig 0.16.x. The wiki documents the package language, authority model,

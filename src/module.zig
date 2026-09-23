@@ -18,11 +18,10 @@ pub const Callable = struct {
     }
 
     pub fn call(self: Callable, allocator: Allocator, input: []const u8, config: []const u8) ![]u8 {
-        self.state.pushFunction(zlua.wrap(invoke));
-        self.state.pushLightUserdata(&self);
-        self.state.pushLightUserdata(@ptrCast(&input));
-        self.state.pushLightUserdata(@ptrCast(&config));
-        try lua_state.protect(self.state, .{ .args = 3, .results = 1 });
+        _ = self.state.getIndexRaw(zlua.registry_index, self.reference);
+        _ = self.state.pushString(input);
+        _ = self.state.pushString(config);
+        try lua_state.protect(self.state, .{ .args = 2, .results = 1 });
         defer self.state.pop(1);
         return allocator.dupe(u8, try lua_state.bytes(self.state, -1));
     }
@@ -93,7 +92,10 @@ pub fn pushModuleProxy(lua: *zlua.Lua, value: *const Resolved, config: *const []
         lua.setTableRaw(-3);
     }
     lua.createTable(0, 2);
-    pushProxy(lua, &value.callable, config, 2);
+    lua.pushLightUserdata(@ptrCast(&value.callable));
+    lua.pushLightUserdata(@ptrCast(config));
+    lua.pushInteger(2);
+    lua.pushClosure(zlua.wrap(callProxy), 3);
     lua.setField(-2, "__call");
     lua.pushBoolean(false);
     lua.setField(-2, "__metatable");
@@ -104,13 +106,6 @@ pub fn pushLoader(lua: *zlua.Lua, value: *const Resolved, config: *const []const
     lua.pushLightUserdata(@ptrCast(value));
     lua.pushLightUserdata(@ptrCast(config));
     lua.pushClosure(zlua.wrap(loadProxy), 2);
-}
-
-pub fn pushProxy(lua: *zlua.Lua, value: *const Callable, config: *const []const u8, input: i32) void {
-    lua.pushLightUserdata(@ptrCast(value));
-    lua.pushLightUserdata(@ptrCast(config));
-    lua.pushInteger(input);
-    lua.pushClosure(zlua.wrap(callProxy), 3);
 }
 
 pub fn pushNativeProxy(lua: *zlua.Lua, value: *const Callable, config: *const []const u8, prepend_config: bool) void {
@@ -163,16 +158,5 @@ fn callNativeProxy(lua: *zlua.Lua) !i32 {
         lua.raiseError();
     };
     try lua_state.transfer(target, lua, -1, 0);
-    return 1;
-}
-
-fn invoke(lua: *zlua.Lua) !i32 {
-    const self: *const Callable = @ptrCast(@alignCast(lua.toPointer(1).?));
-    const input: *const []const u8 = @ptrCast(@alignCast(lua.toPointer(2).?));
-    const config: *const []const u8 = @ptrCast(@alignCast(lua.toPointer(3).?));
-    _ = lua.getIndexRaw(zlua.registry_index, self.reference);
-    _ = lua.pushString(input.*);
-    _ = lua.pushString(config.*);
-    lua.call(.{ .args = 2, .results = 1 });
     return 1;
 }

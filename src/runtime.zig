@@ -9,17 +9,6 @@ const module = @import("module.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const Emitter = struct {
-    context: *anyopaque,
-    write: *const fn (*anyopaque, Kind, []const u8) anyerror!void,
-
-    pub const Kind = enum { message, content, reasoning };
-
-    fn emit(self: Emitter, kind: Kind, bytes: []const u8) !void {
-        try self.write(self.context, kind, bytes);
-    }
-};
-
 const LoadedImport = struct {
     name: []const u8,
     runtime: Runtime,
@@ -35,16 +24,16 @@ pub const Runtime = struct {
     state: *zlua.Lua,
     imports: std.ArrayList(LoadedImport),
     entry: ?module.Resolved,
-    emitter: ?Emitter,
+    emits: bool,
 
-    pub fn init(self: *Runtime, allocator: Allocator, agent: anytype, config: []const u8, imports: anytype, cancellation: *lua.Cancellation, emitter: ?Emitter, diagnostic: ?lua.Diagnostic) !void {
-        try self.open(allocator, agent.client.io, agent.limits, cancellation, &agent.client, &agent.image, config, emitter, diagnostic);
+    pub fn init(self: *Runtime, allocator: Allocator, agent: anytype, config: []const u8, imports: anytype, cancellation: *lua.Cancellation, emits: bool, sink: ?lua.EventSink) !void {
+        try self.open(allocator, agent.client.io, agent.limits, cancellation, &agent.client, &agent.image, config, emits, sink);
         errdefer self.deinit();
         try self.imports.ensureTotalCapacity(allocator, imports.len);
         for (imports) |item| {
             const loaded = self.imports.addOneAssumeCapacity();
             loaded.* = .{ .name = item.name, .runtime = undefined };
-            loaded.runtime.open(allocator, item.agent.client.io, item.agent.limits, cancellation, &item.agent.client, &item.agent.image, item.config, emitter, diagnostic) catch |err| {
+            loaded.runtime.open(allocator, item.agent.client.io, item.agent.limits, cancellation, &item.agent.client, &item.agent.image, item.config, emits, sink) catch |err| {
                 _ = self.imports.pop();
                 return err;
             };
@@ -65,22 +54,15 @@ pub const Runtime = struct {
         }
     }
 
-    pub fn resolve(self: *Runtime) !void {
-        for (self.imports.items) |*item| {
-            try item.runtime.resolve();
-            self.state.pushFunction(zlua.wrap(publishImport));
-            self.state.pushLightUserdata(@ptrCast(&item.name));
-            self.state.pushLightUserdata(&item.runtime.entry.?);
-            self.state.pushLightUserdata(@ptrCast(&item.runtime.config));
-            try lua.protect(self.state, .{ .args = 3 });
-        }
-        self.state.pushFunction(zlua.wrap(requireEntry));
-        self.state.pushLightUserdata(self);
-        try lua.protect(self.state, .{ .args = 1 });
-    }
-
     pub fn call(self: *Runtime, input: []const u8) ![]u8 {
         return self.entry.?.callable.call(self.quota.backing, input, self.config);
+    }
+
+    pub fn resolve(self: *Runtime) !void {
+        for (self.imports.items) |*item| try item.runtime.resolve();
+        self.state.pushFunction(zlua.wrap(resolveEntry));
+        self.state.pushLightUserdata(self);
+        try lua.protect(self.state, .{ .args = 1 });
     }
 
     pub fn deinit(self: *Runtime) void {
@@ -93,18 +75,18 @@ pub const Runtime = struct {
         self.imports.deinit(self.quota.backing);
     }
 
-    fn open(self: *Runtime, allocator: Allocator, io: std.Io, limits: lua.Limits, cancellation: *lua.Cancellation, client: *std.http.Client, image: *const Image, config: []const u8, emitter: ?Emitter, diagnostic: ?lua.Diagnostic) !void {
+    fn open(self: *Runtime, allocator: Allocator, io: std.Io, limits: lua.Limits, cancellation: *lua.Cancellation, client: *std.http.Client, image: *const Image, config: []const u8, emits: bool, sink: ?lua.EventSink) !void {
         self.* = .{
             .limits = limits,
             .client = client,
             .image = image,
             .config = config,
             .quota = .{ .backing = allocator, .max_bytes = limits.memory_bytes },
-            .control = .{ .io = io, .cancellation = cancellation, .remaining_instructions = limits.instructions, .diagnostic = diagnostic },
+            .control = .{ .io = io, .cancellation = cancellation, .remaining_instructions = limits.instructions, .sink = sink },
             .state = undefined,
             .imports = .empty,
             .entry = null,
-            .emitter = emitter,
+            .emits = emits,
         };
         self.state = try zlua.Lua.init(self.quota.allocator());
         errdefer self.state.deinit();
@@ -115,7 +97,7 @@ pub const Runtime = struct {
     }
 
     fn openFrom(self: *Runtime, source: *const Runtime) !void {
-        try self.open(source.quota.backing, source.control.io, source.limits, source.control.cancellation, source.client, source.image, source.config, source.emitter, source.control.diagnostic);
+        try self.open(source.quota.backing, source.control.io, source.limits, source.control.cancellation, source.client, source.image, source.config, source.emits, source.control.sink);
     }
 };
 
@@ -134,16 +116,13 @@ fn initialize(state: *zlua.Lua) !i32 {
         state.setField(-2, item.name);
     }
     state.pop(1);
-    state.createTable(0, 7);
+    state.createTable(0, 6);
     try fs.install(state, &self.image.directory);
     http.install(state, self.client);
     process.install(state);
     state.pushLightUserdata(self);
     state.pushClosure(zlua.wrap(emit), 1);
     state.setField(-2, "emit");
-    state.pushLightUserdata(self);
-    state.pushClosure(zlua.wrap(emitDelta), 1);
-    state.setField(-2, "emit_delta");
     state.pushFunction(zlua.wrap(log));
     state.setField(-2, "log");
     state.pushLightUserdata(self);
@@ -184,18 +163,13 @@ fn initialize(state: *zlua.Lua) !i32 {
 }
 
 fn emit(state: *zlua.Lua) !i32 {
-    if (state.getTop() != 1) return error.InvalidArgument;
+    const count = state.getTop();
+    if (count != 1 and count != 2) return error.InvalidArgument;
+    const bytes = try lua.bytes(state, 1);
+    const append = count == 2 and std.mem.eql(u8, try lua.bytes(state, 2), "append");
+    if (count == 2 and !append) return error.InvalidArgument;
     const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
-    if (self.emitter) |emitter| try emitter.emit(.message, try lua.bytes(state, 1));
-    return 0;
-}
-
-fn emitDelta(state: *zlua.Lua) !i32 {
-    if (state.getTop() != 2) return error.InvalidArgument;
-    const kind = try lua.bytes(state, 1);
-    const selected: Emitter.Kind = if (std.mem.eql(u8, kind, "content")) .content else if (std.mem.eql(u8, kind, "reasoning")) .reasoning else return error.InvalidArgument;
-    const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
-    if (self.emitter) |emitter| try emitter.emit(selected, try lua.bytes(state, 2));
+    if (self.emits) if (self.control.sink) |sink| try sink.emit(if (append) .{ .append = bytes } else .{ .message = bytes });
     return 0;
 }
 
@@ -204,7 +178,7 @@ fn log(state: *zlua.Lua) !i32 {
     const stage = try lua.bytes(state, 1);
     if (stage.len == 0 or stage.len > 80) return error.InvalidArgument;
     for (stage) |byte| if (!std.ascii.isAlphanumeric(byte) and byte != '.' and byte != '_' and byte != '-') return error.InvalidArgument;
-    if (lua.control(state).diagnostic) |diagnostic| try diagnostic.emit(.log, stage);
+    if (lua.control(state).sink) |sink| try sink.emit(.{ .log = stage });
     return 0;
 }
 
@@ -219,24 +193,19 @@ fn listImports(state: *zlua.Lua) !i32 {
     return 1;
 }
 
-fn publishImport(state: *zlua.Lua) !i32 {
-    const name: *const []const u8 = @ptrCast(@alignCast(state.toPointer(1).?));
-    const value: *const module.Resolved = @ptrCast(@alignCast(state.toPointer(2).?));
-    const config: *const []const u8 = @ptrCast(@alignCast(state.toPointer(3).?));
-    _ = state.getField(zlua.registry_index, zlua.preload_table);
-    _ = state.pushString(name.*);
-    _ = state.getTableRaw(-2);
-    if (!state.isNil(-1)) return error.DuplicateImport;
-    state.pop(1);
-    _ = state.pushString(name.*);
-    module.pushLoader(state, value, config);
-    state.setTableRaw(-3);
-    state.pop(1);
-    return 0;
-}
-
-fn requireEntry(state: *zlua.Lua) !i32 {
+fn resolveEntry(state: *zlua.Lua) !i32 {
     const self: *Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(1).?)));
+    _ = state.getField(zlua.registry_index, zlua.preload_table);
+    for (self.imports.items) |*item| {
+        _ = state.pushString(item.name);
+        _ = state.getTableRaw(-2);
+        if (!state.isNil(-1)) return error.DuplicateImport;
+        state.pop(1);
+        _ = state.pushString(item.name);
+        module.pushLoader(state, &item.runtime.entry.?, &item.runtime.config);
+        state.setTableRaw(-3);
+    }
+    state.pop(1);
     _ = state.getGlobal("require");
     _ = state.pushString(self.image.entry);
     state.call(.{ .args = 1, .results = 1 });
