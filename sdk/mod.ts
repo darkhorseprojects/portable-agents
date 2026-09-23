@@ -6,6 +6,17 @@ const fail = (code: string) => new AgentError({ code });
 const Frame = Schema.fromJsonString(Schema.Union([
   Schema.Struct({ emit: Schema.Uint8ArrayFromBase64 }),
   Schema.Struct({
+    delta: Schema.Struct({
+      kind: Schema.Union([
+        Schema.Literal("content"),
+        Schema.Literal("reasoning"),
+      ]),
+      output: Schema.Uint8ArrayFromBase64,
+    }),
+  }),
+  Schema.Struct({ log: Schema.String }),
+  Schema.Struct({ traceback: Schema.String }),
+  Schema.Struct({
     result: Schema.Union([
       Schema.Struct({ output: Schema.Uint8ArrayFromBase64 }),
       Schema.Struct({ error: Schema.String }),
@@ -34,10 +45,18 @@ export interface AgentOptions {
 
 export type AgentEvent =
   | { readonly type: "emit"; readonly output: Uint8Array }
+  | {
+    readonly type: "delta";
+    readonly kind: "content" | "reasoning";
+    readonly output: Uint8Array;
+  }
+  | { readonly type: "log"; readonly stage: string }
+  | { readonly type: "traceback"; readonly detail: string }
   | { readonly type: "result"; readonly output: Uint8Array };
 
 export class AgentError extends Schema.TaggedError<AgentError>()("AgentError", {
   code: Schema.String,
+  detail: Schema.optional(Schema.String),
 }) {}
 
 export class Agent {
@@ -82,8 +101,8 @@ const call = Effect.fn("Agent.call")(
     const result = yield* events(agent, input, config, imports, false).pipe(
       Stream.runFold(
         () => undefined as Uint8Array | undefined,
-        (_, event: AgentEvent) =>
-          event.type === "result" ? event.output : undefined,
+        (previous, event: AgentEvent) =>
+          event.type === "result" ? event.output : previous,
       ),
     );
     if (result === undefined) return yield* fail("InvalidProtocol");
@@ -117,6 +136,7 @@ function events(
       forceKillAfter: "1 second",
     });
     let terminal = false;
+    let traceback: string | undefined;
     const frames = handle.stdout.pipe(
       Stream.decodeText(),
       Stream.splitLines,
@@ -130,9 +150,22 @@ function events(
           if ("emit" in frame) {
             return { type: "emit", output: frame.emit } as const;
           }
+          if ("delta" in frame) {
+            return { type: "delta", ...frame.delta } as const;
+          }
+          if ("log" in frame) {
+            return { type: "log", stage: frame.log } as const;
+          }
+          if ("traceback" in frame) {
+            traceback = frame.traceback;
+            return { type: "traceback", detail: traceback } as const;
+          }
           terminal = true;
           if ("error" in frame.result) {
-            return yield* fail(frame.result.error || "AgentFailure");
+            return yield* new AgentError({
+              code: frame.result.error || "AgentFailure",
+              detail: traceback,
+            });
           }
           return { type: "result", output: frame.result.output } as const;
         })

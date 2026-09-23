@@ -53,10 +53,22 @@ pub const Quota = struct {
     }
 };
 
+pub const Diagnostic = struct {
+    context: *anyopaque,
+    write: *const fn (*anyopaque, Kind, []const u8) anyerror!void,
+
+    pub const Kind = enum { log, traceback };
+
+    pub fn emit(self: Diagnostic, kind: Kind, value: []const u8) !void {
+        try self.write(self.context, kind, value);
+    }
+};
+
 pub const Control = struct {
     io: std.Io,
     cancellation: *Cancellation,
     remaining_instructions: u64,
+    diagnostic: ?Diagnostic = null,
 };
 
 pub fn attach(state: *zlua.Lua, value: *Control) void {
@@ -69,7 +81,21 @@ pub fn control(state: *zlua.Lua) *Control {
 }
 
 pub fn protect(state: *zlua.Lua, args: zlua.Lua.ProtectedCallArgs) !void {
-    state.protectedCall(args) catch return if (control(state).cancellation.canceled()) error.Canceled else error.LuaFailure;
+    state.pushFunction(zlua.wrap(traceback));
+    state.insert(-args.args - 2);
+    const handler = state.getTop() - args.args - 1;
+    const result = state.protectedCall(.{ .args = args.args, .results = args.results, .msg_handler = handler });
+    if (result) |_| {
+        state.remove(handler);
+    } else |_| {
+        if (control(state).diagnostic) |diagnostic| {
+            const detail = state.toString(-1) catch "LuaFailure";
+            diagnostic.emit(.traceback, detail[0..@min(2048, detail.len)]) catch {};
+        }
+        state.pop(1);
+        state.remove(handler);
+        return if (control(state).cancellation.canceled()) error.Canceled else error.LuaFailure;
+    }
 }
 
 pub fn bytes(state: *zlua.Lua, index: i32) ![]const u8 {

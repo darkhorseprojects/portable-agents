@@ -33,13 +33,28 @@ const Output = struct {
     writer: *std.Io.Writer,
     mutex: std.Io.Mutex = .init,
 
-    fn emit(context: *anyopaque, bytes: []const u8) !void {
+    fn emit(context: *anyopaque, kind: pa.Emitter.Kind, bytes: []const u8) !void {
         const self: *Output = @ptrCast(@alignCast(context));
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const encoded = try self.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
         defer self.allocator.free(encoded);
-        try write(self.writer, .{ .emit = std.base64.standard.Encoder.encode(encoded, bytes) });
+        const value = std.base64.standard.Encoder.encode(encoded, bytes);
+        switch (kind) {
+            .message => try write(self.writer, .{ .emit = value }),
+            .content => try write(self.writer, .{ .delta = .{ .kind = "content", .output = value } }),
+            .reasoning => try write(self.writer, .{ .delta = .{ .kind = "reasoning", .output = value } }),
+        }
+    }
+
+    fn diagnostic(context: *anyopaque, kind: pa.Diagnostic.Kind, value: []const u8) !void {
+        const self: *Output = @ptrCast(@alignCast(context));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        switch (kind) {
+            .log => try write(self.writer, .{ .log = value }),
+            .traceback => try write(self.writer, .{ .traceback = value }),
+        }
     }
 
     fn result(self: *Output, bytes: []const u8) !void {
@@ -104,7 +119,7 @@ fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, output: *Output
         initialized += 1;
     }
     const emitter: ?pa.Emitter = if (request.emits) .{ .context = output, .write = Output.emit } else null;
-    return agents[0].callWithEmitter(allocator, input, config, imports, emitter);
+    return agents[0].callWithEmitter(allocator, input, config, imports, emitter, .{ .context = output, .write = Output.diagnostic });
 }
 
 fn decodeBase64(allocator: Allocator, encoded: []const u8) ![]u8 {

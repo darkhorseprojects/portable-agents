@@ -85,7 +85,7 @@ fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const 
     var quota = lua.Quota{ .backing = owner.quota.backing, .max_bytes = owner.limits.memory_bytes };
     const state = try zlua.Lua.init(quota.allocator());
     defer state.deinit();
-    var control = lua.Control{ .io = owner.control.io, .cancellation = owner.control.cancellation, .remaining_instructions = owner.limits.instructions };
+    var control = lua.Control{ .io = owner.control.io, .cancellation = owner.control.cancellation, .remaining_instructions = owner.limits.instructions, .diagnostic = owner.control.diagnostic };
     lua.attach(state, &control);
     state.openBase();
     state.openMath();

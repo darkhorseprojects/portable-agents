@@ -12,7 +12,10 @@ fn httpRequest(lua: *zlua.Lua) !i32 {
     errdefer lua_state.control(lua).io.checkCancel() catch lua_state.control(lua).cancellation.cancel();
     if (lua.typeOf(1) != .string or lua.typeOf(2) != .string or lua.typeOf(3) != .string or
         (!lua.isNoneOrNil(4) and lua.typeOf(4) != .string) or
-        (!lua.isNoneOrNil(5) and lua.typeOf(5) != .table)) return error.InvalidRequest;
+        (!lua.isNoneOrNil(5) and lua.typeOf(5) != .table) or
+        (!lua.isNoneOrNil(7) and !lua.isFunction(7))) return error.InvalidRequest;
+    const maximum: ?usize = if (lua.isNoneOrNil(6)) null else std.math.cast(usize, try lua.toInteger(6)) orelse return error.InvalidResponseLimit;
+    if (maximum == 0 or !lua.isNoneOrNil(7) and maximum == null) return error.InvalidResponseLimit;
     const origin = try lua.toString(1);
     try validateRequestBytes(origin);
     var uri = try std.Uri.parse(origin);
@@ -49,10 +52,36 @@ fn httpRequest(lua: *zlua.Lua) !i32 {
         try request.sendBodiless();
     }
     var response = try request.receiveHead(&.{});
+    const status: i64 = @intCast(@intFromEnum(response.head.status));
+    if (maximum) |limit| if (response.head.content_length) |length| {
+        if (length > limit) return error.ResponseTooLarge;
+    };
     var body_buffer: [8192]u8 = undefined;
-    const response_body = try response.reader(&body_buffer).allocRemaining(lua.allocator(), .unlimited);
+    const reader = response.reader(&body_buffer);
+    if (!lua.isNoneOrNil(7)) {
+        var chunk: [8192]u8 = undefined;
+        var received: usize = 0;
+        while (true) {
+            try lua_state.control(lua).io.checkCancel();
+            var buffers: [1][]u8 = .{&chunk};
+            const size = reader.readVec(&buffers) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => return err,
+            };
+            if (size > maximum.? -| received) return error.ResponseTooLarge;
+            received += size;
+            if (size == 0) continue;
+            lua.pushValue(7);
+            lua.pushInteger(status);
+            _ = lua.pushString(chunk[0..size]);
+            try lua_state.protect(lua, .{ .args = 2 });
+        }
+        lua.pushInteger(status);
+        return 1;
+    }
+    const response_body = try reader.allocRemaining(lua.allocator(), if (maximum) |limit| .limited(limit) else .unlimited);
     defer lua.allocator().free(response_body);
-    lua.pushInteger(@intCast(@intFromEnum(response.head.status)));
+    lua.pushInteger(status);
     _ = lua.pushString(response_body);
     return 2;
 }
