@@ -37,6 +37,8 @@ fn httpRequest(lua: *zlua.Lua) !i32 {
     uri.query = relative.query;
     const headers = try requestHeaders(lua, 5);
     defer if (headers) |extra| lua.allocator().free(extra);
+    const body = if (lua.isNoneOrNil(4)) null else try lua.toString(4);
+    if (!method.requestHasBody() and body != null and body.?.len != 0) return error.UnexpectedBody;
     const client: *std.http.Client = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?)));
     var request = try client.request(method, uri, .{
         .redirect_behavior = .unhandled,
@@ -44,11 +46,9 @@ fn httpRequest(lua: *zlua.Lua) !i32 {
         .keep_alive = false,
     });
     defer request.deinit();
-    const body = if (lua.isNoneOrNil(4)) null else try lua.toString(4);
     if (method.requestHasBody()) {
         try request.sendBodyComplete(@constCast(body orelse ""));
     } else {
-        if (body) |bytes| if (bytes.len != 0) return error.UnexpectedBody;
         try request.sendBodiless();
     }
     var response = try request.receiveHead(&.{});
