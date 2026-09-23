@@ -96,9 +96,6 @@ const call = Effect.fn("Agent.call")(
     if (result === undefined) return yield* fail("InvalidProtocol");
     return result;
   },
-  Effect.mapError((error) =>
-    error instanceof AgentError ? error : fail("ProcessFailure")
-  ),
 );
 
 function events(

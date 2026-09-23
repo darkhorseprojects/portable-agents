@@ -140,7 +140,7 @@ fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const 
         \\   keys[#keys+1]=key
         \\  end
         \\  table.sort(keys)
-        \\  for _,key in ipairs(keys) do result[#result+1]=key.."="..text(item[key],true) end
+        \\  for _,key in ipairs(keys) do result[#result+1]=string.format("[%q]=%s",key,text(item[key],true)) end
         \\ end
         \\ return "{"..table.concat(result,",").."}"
         \\end
