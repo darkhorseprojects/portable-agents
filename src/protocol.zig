@@ -21,6 +21,7 @@ const WireImport = struct {
 const Request = struct {
     version: u8,
     emits: bool,
+    profile: bool = false,
     agents: []const WireAgent,
     imports: []const WireImport = &.{},
     input: []const u8,
@@ -31,6 +32,8 @@ const Output = struct {
     allocator: Allocator,
     io: std.Io,
     writer: *std.Io.Writer,
+    started: std.Io.Timestamp,
+    profile: bool = false,
     mutex: std.Io.Mutex = .init,
 
     fn event(context: *anyopaque, value: pa.Event) !void {
@@ -44,7 +47,14 @@ const Output = struct {
                 const text = std.base64.standard.Encoder.encode(encoded, bytes);
                 if (value == .message) try write(self.writer, .{ .emit = text }) else try write(self.writer, .{ .append = text });
             },
-            .log => |stage| try write(self.writer, .{ .log = stage }),
+            .log => |stage| {
+                if (self.profile) {
+                    try write(self.writer, .{
+                        .log = stage,
+                        .atUs = self.started.durationTo(std.Io.Clock.awake.now(self.io)).toMicroseconds(),
+                    });
+                } else try write(self.writer, .{ .log = stage });
+            },
             .traceback => |detail| try write(self.writer, .{ .traceback = detail }),
         }
     }
@@ -61,7 +71,7 @@ const Output = struct {
 };
 
 pub fn call(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, writer: *std.Io.Writer) !void {
-    var output: Output = .{ .allocator = allocator, .io = io, .writer = writer };
+    var output: Output = .{ .allocator = allocator, .io = io, .writer = writer, .started = std.Io.Clock.awake.now(io) };
     const outcome = run(allocator, io, reader, &output);
     defer if (outcome) |bytes| allocator.free(bytes) else |_| {};
     try output.finish(outcome);
@@ -75,6 +85,7 @@ fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, output: *Output
     if (bytes.len == 0) return error.MissingRequest;
     const request = try std.json.parseFromSliceLeaky(Request, scratch, bytes, .{});
     if (request.version != 1 or request.agents.len == 0) return error.InvalidProtocol;
+    output.profile = request.profile;
     const input = try decodeBase64(scratch, request.input);
     const config = try decodeBase64(scratch, request.config);
     const agents = try scratch.alloc(pa.Agent, request.agents.len);
@@ -91,6 +102,7 @@ fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, output: *Output
             .config = try decodeBase64(scratch, wire.config),
         };
     }
+    if (output.profile) try Output.event(output, .{ .log = "protocol.decode.end" });
     var initialized: usize = 0;
     defer while (initialized > 0) {
         initialized -= 1;
@@ -103,7 +115,12 @@ fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, output: *Output
         agent.* = try pa.Agent.init(allocator, io, wire.sourceDir, wire.entryModule, limits);
         initialized += 1;
     }
-    return agents[0].callWithEvents(allocator, input, config, imports, request.emits, .{ .context = output, .write = Output.event });
+    if (output.profile) try Output.event(output, .{ .log = "image.compile.end" });
+    return agents[0].callWithEvents(allocator, input, config, imports, request.emits, .{
+        .context = output,
+        .write = Output.event,
+        .profile = output.profile,
+    });
 }
 
 fn decodeBase64(allocator: Allocator, encoded: []const u8) ![]u8 {

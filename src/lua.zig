@@ -63,6 +63,7 @@ pub const Event = union(enum) {
 pub const EventSink = struct {
     context: *anyopaque,
     write: *const fn (*anyopaque, Event) anyerror!void,
+    profile: bool = false,
 
     pub fn emit(self: EventSink, event: Event) !void {
         try self.write(self.context, event);

@@ -6,7 +6,7 @@ const fail = (code: string) => new AgentError({ code });
 const Frame = Schema.fromJsonString(Schema.Union([
   Schema.Struct({ emit: Schema.Uint8ArrayFromBase64 }),
   Schema.Struct({ append: Schema.Uint8ArrayFromBase64 }),
-  Schema.Struct({ log: Schema.String }),
+  Schema.Struct({ log: Schema.String, atUs: Schema.optional(Schema.Number) }),
   Schema.Struct({ traceback: Schema.String }),
   Schema.Struct({
     result: Schema.Union([
@@ -38,7 +38,7 @@ export interface AgentOptions {
 export type AgentEvent =
   | { readonly type: "emit"; readonly output: Uint8Array }
   | { readonly type: "append"; readonly output: Uint8Array }
-  | { readonly type: "log"; readonly stage: string }
+  | { readonly type: "log"; readonly stage: string; readonly atUs?: number }
   | { readonly type: "traceback"; readonly detail: string }
   | { readonly type: "result"; readonly output: Uint8Array };
 
@@ -64,8 +64,9 @@ export class Agent {
     input: Uint8Array,
     config: Uint8Array,
     imports: readonly Import[] = [],
+    profile = false,
   ) {
-    return events(this, input, config, imports, true);
+    return events(this, input, config, imports, true, profile);
   }
 }
 
@@ -86,13 +87,14 @@ const call = Effect.fn("Agent.call")(
     config: Uint8Array,
     imports: readonly Import[],
   ) {
-    const result = yield* events(agent, input, config, imports, false).pipe(
-      Stream.runFold(
-        () => undefined as Uint8Array | undefined,
-        (previous, event: AgentEvent) =>
-          event.type === "result" ? event.output : previous,
-      ),
-    );
+    const result = yield* events(agent, input, config, imports, false, false)
+      .pipe(
+        Stream.runFold(
+          () => undefined as Uint8Array | undefined,
+          (previous, event: AgentEvent) =>
+            event.type === "result" ? event.output : previous,
+        ),
+      );
     if (result === undefined) return yield* fail("InvalidProtocol");
     return result;
   },
@@ -104,12 +106,13 @@ function events(
   config: Uint8Array,
   imports: readonly Import[],
   emits: boolean,
+  profile: boolean,
 ) {
   return Stream.unwrap(Effect.gen(function* () {
     const request = yield* Effect.try({
       try: () =>
         new TextEncoder().encode(
-          JSON.stringify(encode(agent, input, config, imports, emits)),
+          JSON.stringify(encode(agent, input, config, imports, emits, profile)),
         ),
       catch: () => fail("InvalidImport"),
     });
@@ -139,7 +142,7 @@ function events(
             return { type: "append", output: frame.append } as const;
           }
           if ("log" in frame) {
-            return { type: "log", stage: frame.log } as const;
+            return { type: "log", stage: frame.log, atUs: frame.atUs } as const;
           }
           if ("traceback" in frame) {
             traceback = frame.traceback;
@@ -176,6 +179,7 @@ function encode(
   config: Uint8Array,
   values: readonly Import[],
   emits: boolean,
+  profile: boolean,
 ) {
   const agents: Array<{
     sourceDir: string;
@@ -208,6 +212,7 @@ function encode(
   return {
     version: 1,
     emits,
+    profile,
     agents,
     imports,
     input: Encoding.encodeBase64(input),

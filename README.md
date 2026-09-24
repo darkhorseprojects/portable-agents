@@ -25,7 +25,7 @@ stdout. `Agent.call` returns the terminal bytes; `Agent.stream` also exposes
 opaque bytes emitted through `pa.emit(bytes)` and incremental bytes appended to
 the current message through `pa.emit(bytes, "append")`. PA does not classify
 model reasoning or content. Trusted code can record bounded stage names with
-`pa.log`; Lua failures carry a bounded traceback. `pa.http` can enforce a
+`pa.log`; Lua failures carry a bounded traceback. Profiled log frames include `atUs`, microseconds since the child entered the protocol call, on the child's monotonic clock; ordinary log frames retain their original shape. The SDK's optional fourth `Agent.stream` argument enables profiling (`false` by default); trusted packages can check `pa.profile` to emit extra stage markers only for profiled calls. These child timestamps must not be compared directly with the embedder's clock. `pa.http` can enforce a
 response-byte limit and deliver bounded chunks to a Lua callback. The
 SDK contains no FFI or runtime-specific APIs.
 

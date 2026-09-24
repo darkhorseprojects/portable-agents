@@ -25,6 +25,7 @@ pub const Runtime = struct {
     imports: std.ArrayList(LoadedImport),
     entry: ?module.Resolved,
     emits: bool,
+    profile: bool,
 
     pub fn init(self: *Runtime, allocator: Allocator, agent: anytype, config: []const u8, imports: anytype, cancellation: *lua.Cancellation, emits: bool, sink: ?lua.EventSink) !void {
         try self.open(allocator, agent.client.io, agent.limits, cancellation, &agent.client, &agent.image, config, emits, sink);
@@ -87,6 +88,7 @@ pub const Runtime = struct {
             .imports = .empty,
             .entry = null,
             .emits = emits,
+            .profile = if (sink) |value| value.profile else false,
         };
         self.state = try zlua.Lua.init(self.quota.allocator());
         errdefer self.state.deinit();
@@ -116,7 +118,9 @@ fn initialize(state: *zlua.Lua) !i32 {
         state.setField(-2, item.name);
     }
     state.pop(1);
-    state.createTable(0, 6);
+    state.createTable(0, 8);
+    state.pushBoolean(self.profile);
+    state.setField(-2, "profile");
     try fs.install(state, &self.image.directory);
     http.install(state, self.client);
     process.install(state);

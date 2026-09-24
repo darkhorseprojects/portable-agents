@@ -53,7 +53,7 @@ fn dispatch(state: *zlua.Lua) !i32 {
     }
     for (futures, 1..) |*future, index| {
         _ = state.getIndex(2, @intCast(index));
-        future.* = owner.control.io.async(evaluate, .{ owner, selected.items, lua.bytes(state, -1) catch unreachable, input });
+        future.* = owner.control.io.async(evaluate, .{ owner, selected.items, lua.bytes(state, -1) catch unreachable, input, index });
         state.pop(1);
     }
     for (futures) |*future| {
@@ -75,7 +75,19 @@ fn dispatch(state: *zlua.Lua) !i32 {
     return 1;
 }
 
-fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const u8, input: []const u8) anyerror!EvalResult {
+fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const u8, input: []const u8, source_index: usize) anyerror!EvalResult {
+    if (template.control.sink) |sink| {
+        if (sink.profile) {
+            var buffer: [80]u8 = undefined;
+            sink.emit(.{ .log = std.fmt.bufPrint(&buffer, "eval.source.{d}.begin", .{source_index}) catch unreachable }) catch {};
+        }
+    }
+    defer if (template.control.sink) |sink| {
+        if (sink.profile) {
+            var buffer: [80]u8 = undefined;
+            sink.emit(.{ .log = std.fmt.bufPrint(&buffer, "eval.source.{d}.end", .{source_index}) catch unreachable }) catch {};
+        }
+    };
     var owner: runtime.Runtime = undefined;
     try owner.initClone(template);
     defer owner.deinit();
