@@ -28,11 +28,10 @@ capabilities to use.
   over protocol 1.
 - Limit Lua memory and instructions, and bound HTTP response bytes and chunks.
 
-The
-[wiki](https://github.com/darkhorseprojects/portable-agents/wiki)
-explains package structure, the authority model, and embedding. PA does not add
-ambient Lua modules through `LUA_PATH` or `LUA_CPATH`; native modules are loaded
-from the package's `native/` directory.
+The [wiki](https://github.com/darkhorseprojects/portable-agents/wiki) explains
+package structure, the authority model, and embedding. PA does not add ambient
+Lua modules through `LUA_PATH` or `LUA_CPATH`; native modules are loaded from
+the package's `native/` directory.
 
 ## Requirements
 

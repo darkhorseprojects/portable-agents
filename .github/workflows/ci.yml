@@ -58,7 +58,12 @@ jobs:
               suffix: "",
               archive: tar.gz,
             }
-          - { os: macos-15-intel, id: macos-x86_64, suffix: "", archive: tar.gz }
+          - {
+              os: macos-15-intel,
+              id: macos-x86_64,
+              suffix: "",
+              archive: tar.gz,
+            }
           - { os: macos-15, id: macos-aarch64, suffix: "", archive: tar.gz }
           - {
               os: windows-latest,
