@@ -1,4 +1,4 @@
-import { Effect, Encoding, Schema, Stream } from "effect";
+import { type Cause, Effect, Encoding, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const fail = (code: string) => new AgentError({ code });
@@ -42,10 +42,19 @@ export type AgentEvent =
   | { readonly type: "traceback"; readonly detail: string }
   | { readonly type: "result"; readonly output: Uint8Array };
 
-export class AgentError extends Schema.TaggedError<AgentError>()("AgentError", {
+export interface AgentError extends Cause.YieldableError {
+  readonly _tag: "AgentError";
+  readonly code: string;
+  readonly detail?: string;
+}
+
+export const AgentError: new (fields: {
+  readonly code: string;
+  readonly detail?: string;
+}) => AgentError = Schema.TaggedError<AgentError>()("AgentError", {
   code: Schema.String,
   detail: Schema.optional(Schema.String),
-}) {}
+});
 
 export class Agent {
   constructor(
@@ -56,7 +65,11 @@ export class Agent {
     input: Uint8Array,
     config: Uint8Array,
     imports: readonly Import[] = [],
-  ) {
+  ): Effect.Effect<
+    Uint8Array,
+    AgentError,
+    ChildProcessSpawner.ChildProcessSpawner
+  > {
     return call(this, input, config, imports);
   }
 
@@ -65,20 +78,26 @@ export class Agent {
     config: Uint8Array,
     imports: readonly Import[] = [],
     profile = false,
-  ) {
+  ): Stream.Stream<
+    AgentEvent,
+    AgentError,
+    ChildProcessSpawner.ChildProcessSpawner
+  > {
     return events(this, input, config, imports, true, profile);
   }
 }
 
-export const make = Effect.fnUntraced(function* (options: AgentOptions) {
-  const executable = options.executable ?? "agent";
-  if (
-    !executable ||
-    (options.memoryBytes !== undefined &&
-      (!Number.isSafeInteger(options.memoryBytes) || options.memoryBytes <= 0))
-  ) return yield* fail("InvalidOptions");
-  return new Agent({ ...options, executable });
-});
+export const make: (options: AgentOptions) => Effect.Effect<Agent, AgentError> =
+  Effect.fnUntraced(function* (options: AgentOptions) {
+    const executable = options.executable ?? "agent";
+    if (
+      !executable ||
+      (options.memoryBytes !== undefined &&
+        (!Number.isSafeInteger(options.memoryBytes) ||
+          options.memoryBytes <= 0))
+    ) return yield* fail("InvalidOptions");
+    return new Agent({ ...options, executable });
+  });
 
 const call = Effect.fn("Agent.call")(
   function* (
