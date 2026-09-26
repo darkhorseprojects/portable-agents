@@ -1,41 +1,39 @@
-# Portable Agents v0.1.0
+# Portable Agents v0.1.1
 
-First public release of the Portable Agents runtime and TypeScript SDK. Portable
-Agents packages Lua and Markdown modules into an Image and invokes them inside
-isolated Lua 5.5 states. It is an execution and embedding layer, not a model or
-an agent service.
+This patch release fixes builds against an external Lua 5.5 runtime. The default
+standalone `agent` binaries still bundle Lua; their package format and protocol
+are unchanged from v0.1.0.
 
-## Runtime and SDK
+## System Lua build fix
 
-- `agent check <source> <entry>` validates and loads a package; `agent call`
-  accepts a protocol-1 request on stdin and emits newline-delimited JSON frames
-  on stdout.
-- Packages can grant named Imports, expose callable members, use bounded host
-  operations, and run Eval functions in independent states. Calls have
-  caller-configured Lua memory and instruction limits.
-- Streaming distinguishes new output from append output and reports bounded
-  operator logs. The TypeScript SDK in `sdk/mod.ts` provides `Agent.call` for
-  terminal bytes and `Agent.stream` for protocol events; it uses Effect 4 and
-  starts an `agent call` child process per invocation.
-- The SDK is published as
-  [`@darkhorseprojects/portable-agents`](https://jsr.io/@darkhorseprojects/portable-agents)
-  on JSR at version `0.1.0`. The JSR package is the SDK; it does **not** contain
-  a native `agent` executable.
+When building with `-Dsystem-lua=true`, pass the directory containing `lua.h`
+using `-Dlua-include=...`, as well as the Lua installation prefix for linking:
+
+```sh
+zig build -Doptimize=ReleaseSafe -Dsystem-lua=true -Dlua-include=/path/to/lua/include --search-prefix /path/to/lua
+```
+
+Previously, the header path reached the linker but not the ZigLua C-header
+translator. The translator therefore failed with `lua.h` not found even when Lua
+5.5 headers were installed. Dynamic builds can now share Lua with package native
+modules, as required by Agent Connector and Zinc.
+
+The TypeScript SDK is published on JSR as
+[`@darkhorseprojects/portable-agents@0.1.1`](https://jsr.io/@darkhorseprojects/portable-agents/0.1.1).
+Its API is unchanged; the JSR package does not contain the native executable.
 
 ## Downloads
 
 | Platform            | Asset                                         |
 | ------------------- | --------------------------------------------- |
-| Linux x86-64        | `portable-agents-v0.1.0-linux-x86_64.tar.gz`  |
-| Linux ARM64         | `portable-agents-v0.1.0-linux-aarch64.tar.gz` |
-| macOS Intel         | `portable-agents-v0.1.0-macos-x86_64.tar.gz`  |
-| macOS Apple Silicon | `portable-agents-v0.1.0-macos-aarch64.tar.gz` |
-| Windows x86-64      | `portable-agents-v0.1.0-windows-x86_64.zip`   |
-| Windows ARM64       | `portable-agents-v0.1.0-windows-aarch64.zip`  |
+| Linux x86-64        | `portable-agents-v0.1.1-linux-x86_64.tar.gz`  |
+| Linux ARM64         | `portable-agents-v0.1.1-linux-aarch64.tar.gz` |
+| macOS Intel         | `portable-agents-v0.1.1-macos-x86_64.tar.gz`  |
+| macOS Apple Silicon | `portable-agents-v0.1.1-macos-aarch64.tar.gz` |
+| Windows x86-64      | `portable-agents-v0.1.1-windows-x86_64.zip`   |
+| Windows ARM64       | `portable-agents-v0.1.1-windows-aarch64.zip`  |
 
-Each archive contains the `agent` executable, README, and license. The default
-build bundles Lua; a compatible dynamic Lua 5.5 installation is required only
-when building with `-Dsystem-lua=true`. Release asset hashes are in
-`SHA256SUMS`. Package content, host authority, and embedding details are
-documented in the
-[wiki](https://github.com/darkhorseprojects/portable-agents/wiki).
+Each archive contains `agent`, README, and LICENSE. Verify downloads using the
+included `SHA256SUMS` release asset. See the
+[wiki](https://github.com/darkhorseprojects/portable-agents/wiki) for package
+and embedding documentation.

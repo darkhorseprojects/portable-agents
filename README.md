@@ -43,7 +43,7 @@ the package's `native/` directory.
 For a build using dynamic system Lua:
 
 ```sh
-zig build -Doptimize=ReleaseSafe -Dsystem-lua=true
+zig build -Doptimize=ReleaseSafe -Dsystem-lua=true -Dlua-include=/path/to/lua/include --search-prefix /path/to/lua
 ```
 
 The executable is `agent`. The TypeScript SDK is in `sdk/mod.ts`; it uses Effect
