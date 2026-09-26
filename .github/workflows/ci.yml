@@ -45,7 +45,7 @@ jobs:
       - run: deno publish
 
   build:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push'
     needs: verify
     strategy:
       fail-fast: false
@@ -72,8 +72,9 @@ jobs:
               archive: zip,
             }
           - {
-              os: windows-11-arm,
+              os: windows-latest,
               id: windows-aarch64,
+              target: aarch64-windows-gnu,
               suffix: ".exe",
               archive: zip,
             }
@@ -87,7 +88,7 @@ jobs:
       - name: Build and package
         shell: bash
         run: |
-          zig build -Doptimize=ReleaseSafe
+          zig build -Doptimize=ReleaseSafe ${{ matrix.target && format('-Dtarget={0}', matrix.target) || '' }}
           archive="portable-agents-${GITHUB_REF_NAME}-${{ matrix.id }}"
           mkdir "$archive"
           cp "zig-out/bin/agent${{ matrix.suffix }}" README.md LICENSE "$archive/"
@@ -97,6 +98,7 @@ jobs:
             tar -czf "$archive.tar.gz" "$archive"
           fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: portable-agents-${{ matrix.id }}
           path: portable-agents-*.${{ matrix.archive }}
