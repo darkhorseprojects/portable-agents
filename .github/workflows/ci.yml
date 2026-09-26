@@ -28,6 +28,21 @@ jobs:
           deno fmt --check
           deno lint --rules-exclude=no-slow-types
           deno check --frozen sdk/mod.ts
+          deno publish --dry-run --frozen-lockfile
+
+  publish-jsr:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: { persist-credentials: false }
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with: { deno-version: v2.9.3 }
+      - run: deno publish --frozen-lockfile
 
   build:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -84,7 +99,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: publish-jsr
     runs-on: ubuntu-24.04
     permissions: { contents: write }
     steps:

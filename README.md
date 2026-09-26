@@ -1,3 +1,8 @@
+![portable-agents](https://chaosdiscovery.s-ul.eu/Gtamrmmy)
+
+[![Zig version](https://flat.badgen.net/badge/zig/0.16.0/black?icon=zig&labelColor=orange)](https://github.com/darkhorseprojects/portable-agents/releases/latest)
+[![JSR](https://jsr.io/badges/@darkhorseprojects/portable-agents?style=flat-square&color=083344)](https://jsr.io/@darkhorseprojects/portable-agents)
+
 # Portable Agents
 
 Portable Agents (PA) is a small Zig runtime and library for packaging Lua and
@@ -24,7 +29,7 @@ capabilities to use.
 - Limit Lua memory and instructions, and bound HTTP response bytes and chunks.
 
 The
-[Portable Agents wiki](https://github.com/darkhorseprojects/portable-agents/wiki)
+[wiki](https://github.com/darkhorseprojects/portable-agents/wiki)
 explains package structure, the authority model, and embedding. PA does not add
 ambient Lua modules through `LUA_PATH` or `LUA_CPATH`; native modules are loaded
 from the package's `native/` directory.
