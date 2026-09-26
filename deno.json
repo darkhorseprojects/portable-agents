@@ -1,6 +1,6 @@
 {
   "name": "@darkhorseprojects/portable-agents",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "exports": "./sdk/mod.ts",
   "imports": {
     "effect": "npm:effect@4.0.0-rc.113",

@@ -36,15 +36,14 @@ the package's `native/` directory.
 ## Requirements
 
 - Zig 0.16.x
-- Lua 5.5, either the build's bundled configuration or a compatible dynamic
-  runtime
+- An installed Lua 5.5 shared library; development headers and `pkg-config` are
+  needed to build `agent`. The release archives do not include Lua.
 - Deno for the TypeScript SDK
 
-For a build using dynamic system Lua:
-
-```sh
-zig build -Doptimize=ReleaseSafe -Dsystem-lua=true -Dlua-include=/path/to/lua/include --search-prefix /path/to/lua
-```
+Install Lua 5.5 with your OS package manager (`liblua5.5-dev` on Ubuntu 26.04,
+`brew install lua` on macOS, or the UCRT64/CLANGARM64 Lua package in MSYS2),
+then build with `zig build -Doptimize=ReleaseSafe`. The runtime must remain
+installed when using `agent`.
 
 The executable is `agent`. The TypeScript SDK is in `sdk/mod.ts`; it uses Effect
 4 and starts one `agent call` child process per invocation. `Agent.call` returns

@@ -11,10 +11,11 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: { persist-credentials: false }
+      - run: sudo apt-get update && sudo apt-get install --yes liblua5.5-dev pkgconf
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with: { version: 0.16.0 }
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
@@ -51,9 +52,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, id: linux-x86_64, suffix: "", archive: tar.gz }
+          - { os: ubuntu-26.04, id: linux-x86_64, suffix: "", archive: tar.gz }
           - {
-              os: ubuntu-24.04-arm,
+              os: ubuntu-26.04-arm,
               id: linux-aarch64,
               suffix: "",
               archive: tar.gz,
@@ -72,7 +73,7 @@ jobs:
               archive: zip,
             }
           - {
-              os: windows-latest,
+              os: windows-11-arm,
               id: windows-aarch64,
               target: aarch64-windows-gnu,
               suffix: ".exe",
@@ -84,9 +85,32 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: { persist-credentials: false }
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        if: matrix.id != 'windows-aarch64'
         with: { version: 0.16.0 }
+      - name: Install x86 Zig on Windows ARM
+        if: matrix.id == 'windows-aarch64'
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'zig-x64.zip'
+          Invoke-WebRequest 'https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip' -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne '68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e') { throw 'Zig checksum mismatch' }
+          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'zig-x64')
+          Join-Path $env:RUNNER_TEMP 'zig-x64/zig-x86_64-windows-0.16.0' | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Install Lua on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes liblua5.5-dev pkgconf
+      - name: Install Lua on macOS
+        if: runner.os == 'macOS'
+        run: brew install lua pkgconf
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+        if: runner.os == 'Windows'
+        with:
+          msystem: ${{ matrix.id == 'windows-aarch64' && 'CLANGARM64' || 'UCRT64' }}
+          path-type: inherit
+          update: true
+          pacboy: lua:p pkgconf:p
       - name: Build and package
-        shell: bash
+        shell: ${{ runner.os == 'Windows' && 'msys2 {0}' || 'bash' }}
         run: |
           zig build -Doptimize=ReleaseSafe ${{ matrix.target && format('-Dtarget={0}', matrix.target) || '' }}
           archive="portable-agents-${GITHUB_REF_NAME}-${{ matrix.id }}"

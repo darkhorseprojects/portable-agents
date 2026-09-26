@@ -3,18 +3,22 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const system_lua = b.option(bool, "system-lua", "Use a dynamic ABI-compatible system Lua 5.5") orelse false;
-    const lua_include: ?[]const u8 = if (system_lua)
-        b.option([]const u8, "lua-include", "Directory containing Lua 5.5 headers") orelse @panic("-Dlua-include is required with -Dsystem-lua=true")
+    const include_dir = std.mem.trim(u8, b.run(&.{ "pkg-config", "--variable=includedir", "lua5.5" }), " \r\n");
+    const lua_include = if (@import("builtin").os.tag == .windows)
+        std.mem.trim(u8, b.run(&.{ "cygpath", "-m", include_dir }), " \r\n")
     else
-        null;
-    const lua_headers: ?[]const std.Build.LazyPath = if (lua_include) |path| &.{.{ .cwd_relative = path }} else null;
+        include_dir;
+    const lua_headers: []const std.Build.LazyPath = &.{.{ .cwd_relative = lua_include }};
+    if (@import("builtin").os.tag == .windows) {
+        const prefix = std.mem.trim(u8, b.run(&.{ "pkg-config", "--variable=prefix", "lua5.5" }), " \r\n");
+        b.addSearchPrefix(std.mem.trim(u8, b.run(&.{ "cygpath", "-m", prefix }), " \r\n"));
+    }
     const zlua = b.dependency("zlua", .{
         .target = target,
         .optimize = optimize,
         .lang = .lua55,
-        .shared = system_lua,
-        .system_lua = system_lua,
+        .shared = true,
+        .system_lua = true,
         .additional_system_headers = lua_headers,
     });
     const pa = b.addModule("pa", .{
@@ -33,8 +37,5 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "pa", .module = pa }},
         }),
     });
-    if (system_lua and target.result.os.tag != .windows) {
-        exe.root_module.addRPathSpecial(if (target.result.os.tag == .macos) "@loader_path" else "$ORIGIN");
-    }
     b.installArtifact(exe);
 }
