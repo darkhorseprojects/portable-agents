@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zlua = .{
-            .url = "git+https://github.com/darkhorseprojects/ziglua#311fda2748b10f7f00d05c6b8b53be02782c395b",
-            .hash = "zlua-0.1.0-hGRpCwqWBQCNyT78GHjVGGiLjaJ_7_S8Sr3YcpqWHnxz",
+            .url = "git+https://github.com/darkhorseprojects/ziglua#8649b8af7612acbe2c1134c4ef5d2baa661fbd2c",
+            .hash = "zlua-0.1.0-hGRpC-GVBQADcezdlF2acMpa5cmPC-lLDOHO51tWrJpn",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "deno.json", "deno.lock", "src", "sdk", "LICENSE", "README.md" },
