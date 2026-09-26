@@ -1,33 +1,38 @@
 # Portable Agents
 
-A small Zig library for compiling Lua and Markdown packages and invoking a
-configured entry module in independent Lua 5.5 states.
+Portable Agents (PA) is a small Zig runtime and library for packaging Lua and Markdown agents and calling them in isolated Lua 5.5 states. It gives trusted package code a narrow host interface, supports explicit agent Imports, and keeps each invocation behind caller-configured resource limits.
 
-An `Agent` owns compiled source, an HTTP client, and per-state limits. Trusted
-package code and its third-party dependencies use normal Lua libraries and
-`require`. Host operations live in `require("pa")`. An entry returns a callable
-table whose direct functions can form Eval's `self`; caller Imports expose
-native Lua members through `require(name)`. Root and callable Import entries
-exchange bytes; Import members transfer native Lua arguments and results.
-`pa.imports()` lists the granted Import names. An Import member receives its
-private config first, followed by the caller's positional Lua arguments. Eval
-views copy nil, booleans, numbers, strings, and acyclic tables between isolated
-Lua states; table results are rendered as Lua text. Trusted package modules and
-pure Lua dependencies are compiled into the Image, while native modules load
-from the package's `native/` directory. PA fixes `package.path` to empty and
-`package.cpath` to that directory's absolute native-module pattern; ambient
-`LUA_PATH` and `LUA_CPATH` do not add modules. Eval can make caller-owned tables
-callable, but exposes no general metatable access.
+PA is an execution and embedding layer, not a model, orchestration service, or ready-made agent. Packages define their own behavior and decide which capabilities to use.
 
-The TypeScript SDK targets Effect 4. Each scoped `agent call` process reads one
-protocol-1 JSON request from stdin and writes newline-delimited result frames to
-stdout. `Agent.call` returns the terminal bytes; `Agent.stream` also exposes
-opaque bytes emitted through `pa.emit(bytes)` and incremental bytes appended to
-the current message through `pa.emit(bytes, "append")`. PA does not classify
-model reasoning or content. Trusted code can record bounded stage names with
-`pa.log`; Lua failures carry a bounded traceback. Profiled log frames include `atUs`, microseconds since the child entered the protocol call, on the child's monotonic clock; ordinary log frames retain their original shape. The SDK's optional fourth `Agent.stream` argument enables profiling (`false` by default); trusted packages can check `pa.profile` to emit extra stage markers only for profiled calls. These child timestamps must not be compared directly with the embedder's clock. `pa.http` can enforce a
-response-byte limit and deliver bounded chunks to a Lua callback. The
-SDK contains no FFI or runtime-specific APIs.
+## What you get
 
-Requires Zig 0.16.x. The wiki documents the package language, authority model,
-and embedding APIs.
+- Compile a package's Lua modules and Markdown documents into a Portable Agents Image.
+- Invoke its configured entry module with byte input and config, or expose it as an Import to another agent.
+- Use `require("pa")` for host operations and `require(name)` for explicitly granted Import modules.
+- Run Eval functions in independent states, passing supported native Lua values between them.
+- Stream opaque output bytes, incremental append bytes, and bounded stage logs over protocol 1.
+- Limit Lua memory and instructions, and bound HTTP response bytes and chunks.
+
+The [Portable Agents wiki](https://github.com/darkhorseprojects/portable-agents/wiki) explains package structure, the authority model, and embedding. PA does not add ambient Lua modules through `LUA_PATH` or `LUA_CPATH`; native modules are loaded from the package's `native/` directory.
+
+## Requirements
+
+- Zig 0.16.x
+- Lua 5.5, either the build's bundled configuration or a compatible dynamic runtime
+- Deno for the TypeScript SDK
+
+For a build using dynamic system Lua:
+
+```sh
+zig build -Doptimize=ReleaseSafe -Dsystem-lua=true
+```
+
+The executable is `agent`. The TypeScript SDK is in `sdk/mod.ts`; it uses Effect 4 and starts one `agent call` child process per invocation. `Agent.call` returns terminal bytes. `Agent.stream` exposes protocol events, including optional profiling when explicitly enabled.
+
+## Learn more
+
+- [Portable Agents wiki](https://github.com/darkhorseprojects/portable-agents/wiki) — package language, authority model, protocol, and embedding APIs
+- [Zinc](https://github.com/darkhorseprojects/zinc) — a memory-enabled Portable Agents package
+- [Agent Connector](https://github.com/darkhorseprojects/agent-connector) — a Discord integration for Portable Agents policies
+
+License: [AGPL-3.0-only](LICENSE).
