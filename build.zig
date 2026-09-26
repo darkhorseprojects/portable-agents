@@ -4,6 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const windows = @import("builtin").os.tag == .windows;
+    if (windows) b.graph.environ_map.put("PKG_CONFIG_ALLOW_SYSTEM_CFLAGS", "1") catch @panic("OOM");
     const lua_lib_dir = if (windows)
         std.mem.trim(u8, b.run(&.{ "cygpath", "-m", std.mem.trim(u8, b.run(&.{ "pkg-config", "--variable=libdir", "lua5.5" }), " \r\n") }), " \r\n")
     else
