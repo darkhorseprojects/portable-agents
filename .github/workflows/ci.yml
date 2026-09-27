@@ -108,7 +108,7 @@ jobs:
         with:
           msystem: ${{ matrix.id == 'windows-aarch64' && 'CLANGARM64' || 'UCRT64' }}
           path-type: inherit
-          update: true
+          update: false
           pacboy: lua:p pkgconf:p
       - name: Build and package on Unix
         if: runner.os != 'Windows'
