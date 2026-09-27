@@ -48,13 +48,14 @@ pub const Image = struct {
             const extension_index = std.mem.lastIndexOfScalar(u8, entry.path, '.') orelse continue;
             const suffix = entry.path[extension_index..];
             if (!std.mem.eql(u8, suffix, ".lua") and !std.mem.eql(u8, suffix, ".md")) continue;
-            const file = try directory.openFile(io, entry.path, .{
+            var file = try directory.openFile(io, entry.path, .{
                 .allow_directory = false,
                 .follow_symlinks = false,
                 .resolve_beneath = true,
             });
             defer file.close(io);
-            var reader = file.readerStreaming(io, &.{});
+            if (@import("builtin").os.tag == .windows) file.flags.nonblocking = true;
+            var reader = file.reader(io, &.{});
             const bytes = try reader.interface.allocRemaining(allocator, .unlimited);
             defer allocator.free(bytes);
             const is_markdown = std.mem.eql(u8, suffix, ".md");

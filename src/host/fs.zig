@@ -62,13 +62,14 @@ fn read(lua: *zlua.Lua) !i32 {
     const io = lua_state.control(lua).io;
     var parent = try openParent(root, io, try lua.toString(2));
     defer if (parent.owns_dir) parent.dir.close(io);
-    const file = try parent.dir.openFile(io, parent.name, .{
+    var file = try parent.dir.openFile(io, parent.name, .{
         .allow_directory = false,
         .follow_symlinks = false,
     });
     defer file.close(io);
+    if (builtin.os.tag == .windows) file.flags.nonblocking = true;
     var buffer: [8192]u8 = undefined;
-    var reader = file.readerStreaming(io, &buffer);
+    var reader = file.reader(io, &buffer);
     const data = try reader.interface.allocRemaining(lua.allocator(), .unlimited);
     defer lua.allocator().free(data);
     _ = lua.pushString(data);
