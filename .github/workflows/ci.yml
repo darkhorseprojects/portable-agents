@@ -103,11 +103,11 @@ jobs:
       - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
         if: matrix.id == 'windows-aarch64'
         with:
-          msystem: CLANGARM64
+          msystem: UCRT64
           path-type: inherit
           update: true
-          install: pkgconf
-          pacboy: lua:p
+          install: mingw-w64-clang-aarch64-lua
+          pacboy: pkgconf:p
       - name: Build and package on Unix
         if: runner.os != 'Windows'
         run: |
