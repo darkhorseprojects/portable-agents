@@ -5,38 +5,47 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to publish
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  group: ${{ github.workflow }}-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: ${{ inputs.release_tag == '' && !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   verify:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with: { persist-credentials: false }
-      - run: sudo apt-get update && sudo apt-get install --yes liblua5.5-dev pkgconf
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          persist-credentials: false
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with: { version: 0.16.0 }
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
         with: { deno-version: v2.9.3 }
-      - name: Verify Zig
+      - name: Verify source
         run: |
           zig fmt --check build.zig src
-          zig build -Doptimize=ReleaseSafe
-      - name: Verify TypeScript SDK
-        run: |
           deno fmt --check
           deno lint --rules-include=no-slow-types
           deno check --frozen sdk/mod.ts
           deno publish --dry-run
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            test "$GITHUB_REF_NAME" = "v$(deno eval 'console.log(JSON.parse(Deno.readTextFileSync("deno.json")).version)')"
-          fi
+          deno_version=$(deno eval 'console.log(JSON.parse(Deno.readTextFileSync("deno.json")).version)')
+          zig_version=$(awk -F'"' '/^[[:space:]]*[.]version =/{print $2; exit}' build.zig.zon)
+          test "$deno_version" = "$zig_version"
+      - name: Verify tag
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: test "$RELEASE_TAG" = "v$(deno eval 'console.log(JSON.parse(Deno.readTextFileSync("deno.json")).version)')"
 
   build-unix:
     needs: verify
@@ -52,7 +61,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with: { persist-credentials: false }
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          persist-credentials: false
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with: { version: 0.16.0 }
       - name: Install Lua on Linux
@@ -61,8 +72,9 @@ jobs:
       - name: Install Lua on macOS
         if: runner.os == 'macOS'
         run: brew install lua pkgconf
-      - name: Build and package
+      - name: Build and test
         run: |
+          set -euo pipefail
           zig build -Doptimize=ReleaseSafe
           if [[ "$RUNNER_OS" == macOS ]]; then
             otool -L zig-out/bin/agent | grep -F '@rpath/liblua.5.5.dylib'
@@ -70,8 +82,18 @@ jobs:
           else
             readelf -d zig-out/bin/agent | grep -F 'Shared library: [liblua5.5.so.0]'
           fi
+          mkdir smoke
+          printf '%s\n' 'return setmetatable({}, {__call=function() return "ok" end})' > smoke/entry.lua
+          output=$(printf '%s' '{"version":1,"emits":false,"agents":[{"sourceDir":"smoke","entryModule":"entry","limits":{}}],"imports":[],"input":"","config":""}' | zig-out/bin/agent call)
+          grep -F '"output":"b2s="' <<< "$output"
+      - name: Package
+        if: github.event_name != 'pull_request'
+        env:
+          TARGET_ID: ${{ matrix.id }}
+        run: |
+          set -euo pipefail
           version=$(python3 -c 'import json; print(json.load(open("deno.json"))["version"])')
-          root="portable-agents-v${version}-${{ matrix.id }}"
+          root="portable-agents-v${version}-${TARGET_ID}"
           mkdir "$root"
           cp zig-out/bin/agent README.md LICENSE "$root/"
           tar -czf "$root.tar.gz" "$root"
@@ -81,7 +103,7 @@ jobs:
           test "$(find "verify-archive/$root" -maxdepth 1 -type f | wc -l)" -eq 3
           ! find "verify-archive/$root" -iname '*lua*' | grep .
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
         with:
           name: portable-agents-${{ matrix.id }}
           path: portable-agents-*.tar.gz
@@ -107,12 +129,15 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with: { persist-credentials: false }
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          persist-credentials: false
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with: { version: 0.16.0 }
       - run: sudo apt-get update && sudo apt-get install --yes pkgconf zstd
       - name: Build Windows target
         run: |
+          set -euo pipefail
           mkdir sysroot output
           curl --fail --location --silent --show-error '${{ matrix.lua-url }}' --output lua.pkg.tar.zst
           echo '${{ matrix.lua-sha256 }}  lua.pkg.tar.zst' | sha256sum --check
@@ -132,7 +157,7 @@ jobs:
           path: output
           if-no-files-found: error
 
-  package-windows:
+  test-windows:
     needs: build-windows
     strategy:
       fail-fast: false
@@ -144,14 +169,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with: { persist-credentials: false }
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: windows-build-${{ matrix.id }}
           path: build
-      - name: Test and package
+      - name: Test
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $url = Get-Content build/lua-url -Raw
           $expected = Get-Content build/lua-sha256 -Raw
           $prefix = Get-Content build/lua-prefix -Raw
@@ -164,54 +192,81 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:Path = "$(Resolve-Path "runtime/$prefix/bin");$env:Path"
           New-Item -ItemType Directory smoke
-          Set-Content smoke/entry.lua 'return function() end'
-          & build/agent.exe check smoke entry
+          Set-Content -NoNewline smoke/entry.lua 'return setmetatable({}, {__call=function() return "ok" end})'
+          $request = '{"version":1,"emits":false,"agents":[{"sourceDir":"smoke","entryModule":"entry","limits":{}}],"imports":[],"input":"","config":""}'
+          $output = $request | & build/agent.exe call
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $result = $output | ConvertFrom-Json
+          $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($result.result.output))
+          if ($text -ne 'ok') { throw 'runtime smoke test failed' }
+      - name: Package
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          TARGET_ID: ${{ matrix.id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
           $version = (Get-Content deno.json -Raw | ConvertFrom-Json).version
-          $root = "portable-agents-v$version-${{ matrix.id }}"
+          $root = "portable-agents-v$version-$env:TARGET_ID"
           New-Item -ItemType Directory $root
           Copy-Item build/agent.exe, README.md, LICENSE $root
           Compress-Archive $root "$root.zip"
           Expand-Archive "$root.zip" verify-archive
           $files = Get-ChildItem "verify-archive/$root" -File
-          if ($files.Count -ne 3 -or -not (Test-Path "verify-archive/$root/agent.exe") -or ($files.Name -match 'lua')) { throw 'Invalid archive contents' }
+          if ($files.Count -ne 3 -or -not (Test-Path "verify-archive/$root/agent.exe") -or ($files.Name -match 'lua')) { throw 'invalid archive contents' }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
         with:
           name: portable-agents-${{ matrix.id }}
           path: portable-agents-*.zip
           if-no-files-found: error
 
+  release:
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+    needs: [build-unix, test-windows]
+    runs-on: ubuntu-24.04
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: portable-agents-*
+          path: artifacts
+          merge-multiple: true
+      - name: Verify release assets
+        working-directory: artifacts
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import json; print(json.load(open("../deno.json"))["version"])')
+          for id in linux-x86_64 linux-aarch64 macos-x86_64 macos-aarch64; do
+            test -f "portable-agents-v${version}-${id}.tar.gz"
+          done
+          for id in windows-x86_64 windows-aarch64; do
+            test -f "portable-agents-v${version}-${id}.zip"
+          done
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 6
+          sha256sum portable-agents-* > SHA256SUMS
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          files: artifacts/*
+          body_path: RELEASE_NOTES.md
+
   publish-jsr:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-unix, package-windows]
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+    needs: release
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with: { persist-credentials: false }
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+          persist-credentials: false
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
         with: { deno-version: v2.9.3 }
       - run: deno publish
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: publish-jsr
-    runs-on: ubuntu-24.04
-    permissions: { contents: write }
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with: { persist-credentials: false }
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: portable-agents-*
-          path: artifacts
-          merge-multiple: true
-      - run: |
-          test "$(find artifacts -maxdepth 1 -type f | wc -l)" -eq 6
-          cd artifacts
-          sha256sum portable-agents-* > SHA256SUMS
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
-        with: { files: "artifacts/*", body_path: RELEASE_NOTES.md }
