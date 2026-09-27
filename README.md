@@ -1,6 +1,6 @@
 ![portable-agents](https://chaosdiscovery.s-ul.eu/Gtamrmmy)
 
-[![Zig version](https://flat.badgen.net/badge/zig/0.16.0/black?icon=zig&labelColor=orange)](https://github.com/darkhorseprojects/portable-agents/releases/latest)
+[![Zig version](https://img.shields.io/badge/zig-0.16.0-black?style=flat&logo=zig&logoColor=F7A41D&labelColor=black)](https://github.com/darkhorseprojects/portable-agents/releases/latest)
 [![JSR](https://jsr.io/badges/@darkhorseprojects/portable-agents?style=flat-square&color=083344)](https://jsr.io/@darkhorseprojects/portable-agents)
 
 # Portable Agents
@@ -36,14 +36,14 @@ the package's `native/` directory.
 ## Requirements
 
 - Zig 0.16.x
-- An installed Lua 5.5 shared library; development headers and `pkg-config` are
-  needed to build `agent`. The release archives do not include Lua.
+- An architecture-compatible Lua 5.5 shared library discoverable by the
+  operating system's dynamic loader. Release archives do not include Lua.
 - Deno for the TypeScript SDK
 
-Install Lua 5.5 with your OS package manager (`liblua5.5-dev` on Ubuntu 26.04,
-`brew install lua` on macOS, or the UCRT64/CLANGARM64 Lua package in MSYS2),
-then build with `zig build -Doptimize=ReleaseSafe`. The runtime must remain
-installed when using `agent`.
+At runtime, `agent` requests `liblua5.5.so.0` on Linux,
+`@rpath/liblua.5.5.dylib` on macOS, or `lua55.dll` on Windows. To build `agent`,
+install the matching development headers and make its `lua5.5` pkg-config
+metadata discoverable, then run `zig build -Doptimize=ReleaseSafe`.
 
 The executable is `agent`. The TypeScript SDK is in `sdk/mod.ts`; it uses Effect
 4 and starts one `agent call` child process per invocation. `Agent.call` returns

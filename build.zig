@@ -43,5 +43,21 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "pa", .module = pa }},
         }),
     });
-    b.installArtifact(exe);
+    const install = b.addInstallArtifact(exe, .{});
+    if (target.result.os.tag == .macos) {
+        const macos_lua_lib_dir = std.mem.trim(u8, b.run(&.{ "pkg-config", "--variable=libdir", "lua5.5" }), " \r\n");
+        exe.root_module.addRPathSpecial("@executable_path");
+        exe.root_module.addRPath(.{ .cwd_relative = macos_lua_lib_dir });
+        const normalize = b.addSystemCommand(&.{
+            "install_name_tool",
+            "-change",
+            b.pathJoin(&.{ macos_lua_lib_dir, "liblua.5.5.dylib" }),
+            "@rpath/liblua.5.5.dylib",
+            b.getInstallPath(.bin, "agent"),
+        });
+        normalize.step.dependOn(&install.step);
+        b.getInstallStep().dependOn(&normalize.step);
+    } else {
+        b.getInstallStep().dependOn(&install.step);
+    }
 }
