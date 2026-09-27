@@ -88,15 +88,15 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         if: matrix.id != 'windows-aarch64'
         with: { version: 0.16.0 }
-      - name: Install x86 Zig on Windows ARM
+      - name: Install Zig on Windows ARM
         if: matrix.id == 'windows-aarch64'
         shell: pwsh
         run: |
-          $zip = Join-Path $env:RUNNER_TEMP 'zig-x64.zip'
-          Invoke-WebRequest 'https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip' -OutFile $zip
-          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne '68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e') { throw 'Zig checksum mismatch' }
-          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'zig-x64')
-          Join-Path $env:RUNNER_TEMP 'zig-x64/zig-x86_64-windows-0.16.0' | Out-File -FilePath $env:GITHUB_PATH -Append
+          $zip = Join-Path $env:RUNNER_TEMP 'zig-arm64.zip'
+          Invoke-WebRequest 'https://ziglang.org/download/0.16.0/zig-aarch64-windows-0.16.0.zip' -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'aee38316ee4111717900f45dd3130145c39289e105541d737eb8c5ed653c78ef') { throw 'Zig checksum mismatch' }
+          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'zig-arm64')
+          Join-Path $env:RUNNER_TEMP 'zig-arm64/zig-aarch64-windows-0.16.0' | Out-File -FilePath $env:GITHUB_PATH -Append
       - name: Install Lua on Linux
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes liblua5.5-dev pkgconf
