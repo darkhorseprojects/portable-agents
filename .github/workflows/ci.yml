@@ -192,7 +192,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $env:Path = "$(Resolve-Path "runtime/$prefix/bin");$env:Path"
           New-Item -ItemType Directory smoke
-          Set-Content -NoNewline smoke/entry.lua 'return setmetatable({}, {__call=function() return "ok" end})'
+          Set-Content -NoNewline -Path smoke/entry.lua -Value 'return setmetatable({}, {__call=function() return "ok" end})'
           $request = '{"version":1,"emits":false,"agents":[{"sourceDir":"smoke","entryModule":"entry","limits":{}}],"imports":[],"input":"","config":""}'
           $output = $request | & build/agent.exe call
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
