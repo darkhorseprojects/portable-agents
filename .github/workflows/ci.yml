@@ -129,7 +129,6 @@ jobs:
         shell: msys2 {0}
         run: |
           zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
-          objdump -p zig-out/bin/agent.exe | grep -i 'DLL Name: lua55.dll'
           root="portable-agents-${GITHUB_REF_NAME}-${{ matrix.id }}"
           mkdir "$root"
           cp zig-out/bin/agent.exe README.md LICENSE "$root/"
