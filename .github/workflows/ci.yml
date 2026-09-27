@@ -195,10 +195,10 @@ jobs:
           Set-Content -NoNewline -Path smoke/entry.lua -Value 'return setmetatable({}, {__call=function() return "ok" end})'
           $request = '{"version":1,"emits":false,"agents":[{"sourceDir":"smoke","entryModule":"entry","limits":{}}],"imports":[],"input":"","config":""}'
           $output = $request | & build/agent.exe call
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $result = $output | ConvertFrom-Json
-          $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($result.result.output))
-          if ($text -ne 'ok') { throw 'runtime smoke test failed' }
+          $exitCode = $LASTEXITCODE
+          Write-Host ($output -join "`n")
+          if ($exitCode -ne 0) { exit $exitCode }
+          if (($output | ConvertFrom-Json).result.output -ne 'b2s=') { throw "runtime smoke test failed: $output" }
       - name: Package
         if: github.event_name != 'pull_request'
         shell: pwsh
