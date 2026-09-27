@@ -74,7 +74,7 @@ jobs:
               archive: zip,
             }
           - {
-              os: windows-11-arm,
+              os: windows-latest,
               id: windows-aarch64,
               target: aarch64-windows-gnu,
               suffix: ".exe",
@@ -86,17 +86,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: { persist-credentials: false }
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
-        if: matrix.id != 'windows-aarch64'
         with: { version: 0.16.0 }
-      - name: Install Zig on Windows ARM
-        if: matrix.id == 'windows-aarch64'
-        shell: pwsh
-        run: |
-          $zip = Join-Path $env:RUNNER_TEMP 'zig-arm64.zip'
-          Invoke-WebRequest 'https://ziglang.org/download/0.16.0/zig-aarch64-windows-0.16.0.zip' -OutFile $zip
-          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'aee38316ee4111717900f45dd3130145c39289e105541d737eb8c5ed653c78ef') { throw 'Zig checksum mismatch' }
-          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'zig-arm64')
-          Join-Path $env:RUNNER_TEMP 'zig-arm64/zig-aarch64-windows-0.16.0' | Out-File -FilePath $env:GITHUB_PATH -Append
       - name: Install Lua on Linux
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes liblua5.5-dev pkgconf
@@ -104,12 +94,20 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install lua pkgconf
       - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
-        if: runner.os == 'Windows'
+        if: matrix.id == 'windows-x86_64'
         with:
-          msystem: ${{ matrix.id == 'windows-aarch64' && 'CLANGARM64' || 'UCRT64' }}
+          msystem: UCRT64
           path-type: inherit
           update: true
           pacboy: lua:p pkgconf:p
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+        if: matrix.id == 'windows-aarch64'
+        with:
+          msystem: CLANGARM64
+          path-type: inherit
+          update: true
+          install: pkgconf
+          pacboy: lua:p
       - name: Build and package on Unix
         if: runner.os != 'Windows'
         run: |
@@ -124,8 +122,8 @@ jobs:
           mkdir "$root"
           cp zig-out/bin/agent README.md LICENSE "$root/"
           tar -czf "$root.tar.gz" "$root"
-      - name: Build and package on Windows x64
-        if: matrix.id == 'windows-x86_64'
+      - name: Build and package on Windows
+        if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
           zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
@@ -133,19 +131,6 @@ jobs:
           mkdir "$root"
           cp zig-out/bin/agent.exe README.md LICENSE "$root/"
           ROOT="$root" pwsh -NoProfile -Command 'Compress-Archive $env:ROOT ($env:ROOT + ".zip")'
-      - name: Build and package on Windows ARM
-        if: matrix.id == 'windows-aarch64'
-        shell: pwsh
-        run: |
-          $env:Path = "C:\msys64\clangarm64\bin;$env:Path"
-          $env:PKG_CONFIG_PATH = 'C:\msys64\clangarm64\lib\pkgconfig'
-          $env:PKG_CONFIG_ALLOW_SYSTEM_CFLAGS = '1'
-          zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $root = "portable-agents-$env:GITHUB_REF_NAME-${{ matrix.id }}"
-          New-Item -ItemType Directory $root
-          Copy-Item zig-out/bin/agent.exe, README.md, LICENSE $root
-          Compress-Archive $root "$root.zip"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: startsWith(github.ref, 'refs/tags/v')
         with:
