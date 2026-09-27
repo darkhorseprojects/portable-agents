@@ -1,6 +1,6 @@
 ![portable-agents](https://chaosdiscovery.s-ul.eu/Gtamrmmy)
 
-[![Zig version](https://img.shields.io/badge/zig-0.16.0-black?style=flat&logo=zig&logoColor=F7A41D&labelColor=black)](https://github.com/darkhorseprojects/portable-agents/releases/latest)
+[![Zig version](https://img.shields.io/badge/zig-0.16.0-black?style=flat-square&logo=zig&logoColor=F7A41D&labelColor=black)](https://github.com/darkhorseprojects/portable-agents/releases/latest)
 [![JSR](https://jsr.io/badges/@darkhorseprojects/portable-agents?style=flat-square&color=083344)](https://jsr.io/@darkhorseprojects/portable-agents)
 
 # Portable Agents
