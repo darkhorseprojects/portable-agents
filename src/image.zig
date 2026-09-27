@@ -54,7 +54,7 @@ pub const Image = struct {
                 .resolve_beneath = true,
             });
             defer file.close(io);
-            var reader = file.reader(io, &.{});
+            var reader = file.readerStreaming(io, &.{});
             const bytes = try reader.interface.allocRemaining(allocator, .unlimited);
             defer allocator.free(bytes);
             const is_markdown = std.mem.eql(u8, suffix, ".md");
