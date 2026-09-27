@@ -126,6 +126,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
+          if [[ "${{ matrix.id }}" == windows-aarch64 ]]; then
+            export PKG_CONFIG_PATH=/clangarm64/lib/pkgconfig
+          fi
           zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
           root="portable-agents-${GITHUB_REF_NAME}-${{ matrix.id }}"
           mkdir "$root"
