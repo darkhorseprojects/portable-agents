@@ -141,6 +141,7 @@ jobs:
           $env:PKG_CONFIG_PATH = 'C:\msys64\clangarm64\lib\pkgconfig'
           $env:PKG_CONFIG_ALLOW_SYSTEM_CFLAGS = '1'
           zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $root = "portable-agents-$env:GITHUB_REF_NAME-${{ matrix.id }}"
           New-Item -ItemType Directory $root
           Copy-Item zig-out/bin/agent.exe, README.md, LICENSE $root
