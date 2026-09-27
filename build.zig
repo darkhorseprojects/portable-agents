@@ -46,12 +46,15 @@ pub fn build(b: *std.Build) void {
     const install = b.addInstallArtifact(exe, .{});
     if (target.result.os.tag == .macos) {
         const macos_lua_lib_dir = std.mem.trim(u8, b.run(&.{ "pkg-config", "--variable=libdir", "lua5.5" }), " \r\n");
+        const lua_dylib = b.pathJoin(&.{ macos_lua_lib_dir, "liblua.5.5.dylib" });
+        const dylib_info = std.mem.trim(u8, b.run(&.{ "otool", "-D", lua_dylib }), " \r\n");
+        const lua_install_name = dylib_info[(std.mem.lastIndexOfScalar(u8, dylib_info, '\n') orelse @panic("invalid Lua install name")) + 1 ..];
         exe.root_module.addRPathSpecial("@executable_path");
         exe.root_module.addRPath(.{ .cwd_relative = macos_lua_lib_dir });
         const normalize = b.addSystemCommand(&.{
             "install_name_tool",
             "-change",
-            b.pathJoin(&.{ macos_lua_lib_dir, "liblua.5.5.dylib" }),
+            lua_install_name,
             "@rpath/liblua.5.5.dylib",
             b.getInstallPath(.bin, "agent"),
         });
