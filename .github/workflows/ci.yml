@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   verify:
     runs-on: ubuntu-26.04
@@ -30,58 +34,22 @@ jobs:
           deno lint --rules-include=no-slow-types
           deno check --frozen sdk/mod.ts
           deno publish --dry-run
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = "v$(deno eval 'console.log(JSON.parse(Deno.readTextFileSync("deno.json")).version)')"
+          fi
 
-  publish-jsr:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with: { persist-credentials: false }
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
-        with: { deno-version: v2.9.3 }
-      - run: deno publish
-
-  build:
-    if: github.event_name == 'push'
+  build-unix:
     needs: verify
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-26.04, id: linux-x86_64, suffix: "", archive: tar.gz }
-          - {
-              os: ubuntu-26.04-arm,
-              id: linux-aarch64,
-              suffix: "",
-              archive: tar.gz,
-            }
-          - {
-              os: macos-15-intel,
-              id: macos-x86_64,
-              suffix: "",
-              archive: tar.gz,
-            }
-          - { os: macos-15, id: macos-aarch64, suffix: "", archive: tar.gz }
-          - {
-              os: windows-latest,
-              id: windows-x86_64,
-              target: x86_64-windows-gnu,
-              suffix: ".exe",
-              archive: zip,
-            }
-          - {
-              os: windows-latest,
-              id: windows-aarch64,
-              target: aarch64-windows-gnu,
-              suffix: ".exe",
-              archive: zip,
-            }
+          - { os: ubuntu-26.04, id: linux-x86_64 }
+          - { os: ubuntu-26.04-arm, id: linux-aarch64 }
+          - { os: macos-15-intel, id: macos-x86_64 }
+          - { os: macos-15, id: macos-aarch64 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: { persist-credentials: false }
@@ -93,23 +61,7 @@ jobs:
       - name: Install Lua on macOS
         if: runner.os == 'macOS'
         run: brew install lua pkgconf
-      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
-        if: matrix.id == 'windows-x86_64'
-        with:
-          msystem: UCRT64
-          path-type: inherit
-          update: true
-          pacboy: lua:p pkgconf:p
-      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
-        if: matrix.id == 'windows-aarch64'
-        with:
-          msystem: UCRT64
-          path-type: inherit
-          update: true
-          install: mingw-w64-clang-aarch64-lua
-          pacboy: pkgconf:p
-      - name: Build and package on Unix
-        if: runner.os != 'Windows'
+      - name: Build and package
         run: |
           zig build -Doptimize=ReleaseSafe
           if [[ "$RUNNER_OS" == macOS ]]; then
@@ -118,30 +70,131 @@ jobs:
           else
             readelf -d zig-out/bin/agent | grep -F 'Shared library: [liblua5.5.so.0]'
           fi
-          root="portable-agents-${GITHUB_REF_NAME}-${{ matrix.id }}"
+          version=$(python3 -c 'import json; print(json.load(open("deno.json"))["version"])')
+          root="portable-agents-v${version}-${{ matrix.id }}"
           mkdir "$root"
           cp zig-out/bin/agent README.md LICENSE "$root/"
           tar -czf "$root.tar.gz" "$root"
-      - name: Build and package on Windows
-        if: runner.os == 'Windows'
-        shell: msys2 {0}
-        run: |
-          if [[ "${{ matrix.id }}" == windows-aarch64 ]]; then
-            msys_root=$(cygpath -m /)
-            export PKG_CONFIG_PATH="$msys_root/clangarm64/lib/pkgconfig"
-            export PKG_CONFIG_SYSROOT_DIR="$msys_root"
-          fi
-          zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }}
-          root="portable-agents-${GITHUB_REF_NAME}-${{ matrix.id }}"
-          mkdir "$root"
-          cp zig-out/bin/agent.exe README.md LICENSE "$root/"
-          ROOT="$root" pwsh -NoProfile -Command 'Compress-Archive $env:ROOT ($env:ROOT + ".zip")'
+          mkdir verify-archive
+          tar -xzf "$root.tar.gz" -C verify-archive
+          test -x "verify-archive/$root/agent"
+          test "$(find "verify-archive/$root" -maxdepth 1 -type f | wc -l)" -eq 3
+          ! find "verify-archive/$root" -iname '*lua*' | grep .
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           name: portable-agents-${{ matrix.id }}
-          path: portable-agents-*.${{ matrix.archive }}
+          path: portable-agents-*.tar.gz
           if-no-files-found: error
+
+  build-windows:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: windows-x86_64
+            target: x86_64-windows-gnu
+            prefix: ucrt64
+            lua-url: https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-lua-5.5.1-1-any.pkg.tar.zst
+            lua-sha256: 0365515318bd4c2027a8e86970d3b2bba8b4257254d1041d960bca165a43843e
+          - id: windows-aarch64
+            target: aarch64-windows-gnu
+            prefix: clangarm64
+            lua-url: https://repo.msys2.org/mingw/clangarm64/mingw-w64-clang-aarch64-lua-5.5.1-1-any.pkg.tar.zst
+            lua-sha256: c4427b84430c3a05b245f190492f3ec2916ef78e1d239e8450bcb5e91f84d98a
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: { persist-credentials: false }
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with: { version: 0.16.0 }
+      - run: sudo apt-get update && sudo apt-get install --yes pkgconf zstd
+      - name: Build Windows target
+        run: |
+          mkdir sysroot output
+          curl --fail --location --silent --show-error '${{ matrix.lua-url }}' --output lua.pkg.tar.zst
+          echo '${{ matrix.lua-sha256 }}  lua.pkg.tar.zst' | sha256sum --check
+          tar --zstd -xf lua.pkg.tar.zst -C sysroot
+          PKG_CONFIG_PATH="$PWD/sysroot/${{ matrix.prefix }}/lib/pkgconfig" \
+          PKG_CONFIG_SYSROOT_DIR="$PWD/sysroot" \
+            zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }} \
+              -Dlua-library="$PWD/sysroot/${{ matrix.prefix }}/lib/liblua.dll.a"
+          cp zig-out/bin/agent.exe output/
+          printf '%s' '${{ matrix.lua-url }}' > output/lua-url
+          printf '%s' '${{ matrix.lua-sha256 }}' > output/lua-sha256
+          printf '%s' '${{ matrix.prefix }}' > output/lua-prefix
+          file output/agent.exe | grep -F '${{ matrix.target == 'aarch64-windows-gnu' && 'ARM64' || 'x86-64' }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-build-${{ matrix.id }}
+          path: output
+          if-no-files-found: error
+
+  package-windows:
+    needs: build-windows
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, id: windows-x86_64 }
+          - { os: windows-11-arm, id: windows-aarch64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: windows-build-${{ matrix.id }}
+          path: build
+      - name: Test and package
+        shell: pwsh
+        run: |
+          $url = Get-Content build/lua-url -Raw
+          $expected = Get-Content build/lua-sha256 -Raw
+          $prefix = Get-Content build/lua-prefix -Raw
+          Invoke-WebRequest $url -OutFile lua.pkg.tar.zst
+          if ((Get-FileHash lua.pkg.tar.zst -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Lua checksum mismatch' }
+          7z x lua.pkg.tar.zst
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory runtime
+          7z x lua.pkg.tar -oruntime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:Path = "$(Resolve-Path "runtime/$prefix/bin");$env:Path"
+          New-Item -ItemType Directory smoke
+          Set-Content smoke/entry.lua 'return function() end'
+          & build/agent.exe check smoke entry
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = (Get-Content deno.json -Raw | ConvertFrom-Json).version
+          $root = "portable-agents-v$version-${{ matrix.id }}"
+          New-Item -ItemType Directory $root
+          Copy-Item build/agent.exe, README.md, LICENSE $root
+          Compress-Archive $root "$root.zip"
+          Expand-Archive "$root.zip" verify-archive
+          $files = Get-ChildItem "verify-archive/$root" -File
+          if ($files.Count -ne 3 -or -not (Test-Path "verify-archive/$root/agent.exe") -or ($files.Name -match 'lua')) { throw 'Invalid archive contents' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: portable-agents-${{ matrix.id }}
+          path: portable-agents-*.zip
+          if-no-files-found: error
+
+  publish-jsr:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-unix, package-windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: { persist-credentials: false }
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with: { deno-version: v2.9.3 }
+      - run: deno publish
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -152,11 +205,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with: { persist-credentials: false }
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: {
-          pattern: portable-agents-*,
-          path: artifacts,
-          merge-multiple: true,
-        }
-      - run: cd artifacts && sha256sum portable-agents-* > SHA256SUMS
+        with:
+          pattern: portable-agents-*
+          path: artifacts
+          merge-multiple: true
+      - run: |
+          test "$(find artifacts -maxdepth 1 -type f | wc -l)" -eq 6
+          cd artifacts
+          sha256sum portable-agents-* > SHA256SUMS
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with: { files: "artifacts/*", body_path: RELEASE_NOTES.md }

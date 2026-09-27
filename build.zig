@@ -4,22 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const windows = @import("builtin").os.tag == .windows;
-    if (windows) b.graph.environ_map.put("PKG_CONFIG_ALLOW_SYSTEM_CFLAGS", "1") catch @panic("OOM");
-    const lua_lib_dir = if (windows)
-        std.mem.trim(u8, b.run(&.{ "cygpath", "-m", std.mem.trim(u8, b.run(&.{ "pkg-config", "--variable=libdir", "lua5.5" }), " \r\n") }), " \r\n")
-    else
-        undefined;
-    const lua_library: std.Build.LazyPath = if (windows)
-        .{ .cwd_relative = b.pathJoin(&.{ lua_lib_dir, "liblua.dll.a" }) }
-    else
-        undefined;
-    const zlua = if (windows) b.dependency("zlua", .{
+    const explicit_lua_library = b.option(std.Build.LazyPath, "lua-library", "Path to a cross-target Lua import library");
+    if (windows or explicit_lua_library != null) b.graph.environ_map.put("PKG_CONFIG_ALLOW_SYSTEM_CFLAGS", "1") catch @panic("OOM");
+    const lua_library: ?std.Build.LazyPath = explicit_lua_library orelse if (windows) .{ .cwd_relative = b.pathJoin(&.{
+        std.mem.trim(u8, b.run(&.{ "cygpath", "-m", std.mem.trim(u8, b.run(&.{ "pkg-config", "--variable=libdir", "lua5.5" }), " \r\n") }), " \r\n"),
+        "liblua.dll.a",
+    }) } else null;
+    const zlua = if (lua_library) |library| b.dependency("zlua", .{
         .target = target,
         .optimize = optimize,
         .lang = .lua55,
         .shared = true,
         .system_lua = true,
-        .system_library = lua_library,
+        .system_library = library,
     }) else b.dependency("zlua", .{
         .target = target,
         .optimize = optimize,
