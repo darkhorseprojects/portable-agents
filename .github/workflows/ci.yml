@@ -194,7 +194,8 @@ jobs:
           New-Item -ItemType Directory smoke
           Set-Content -NoNewline -Path smoke/entry.lua -Value 'return setmetatable({}, {__call=function() return "ok" end})'
           $request = '{"version":1,"emits":false,"agents":[{"sourceDir":"smoke","entryModule":"entry","limits":{}}],"imports":[],"input":"","config":""}'
-          $output = $request | & build/agent.exe call
+          [IO.File]::WriteAllText('request.json', $request, [Text.UTF8Encoding]::new($false))
+          $output = cmd.exe /d /c 'build\agent.exe call < request.json'
           $exitCode = $LASTEXITCODE
           Write-Host ($output -join "`n")
           if ($exitCode -ne 0) { exit $exitCode }
