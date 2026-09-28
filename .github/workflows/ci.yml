@@ -193,13 +193,20 @@ jobs:
           $env:Path = "$(Resolve-Path "runtime/$prefix/bin");$env:Path"
           New-Item -ItemType Directory smoke
           Set-Content -NoNewline -Path smoke/entry.lua -Value 'return setmetatable({}, {__call=function() return "ok" end})'
+          & build/agent.exe check smoke entry
+          Write-Host "direct-check exit=$LASTEXITCODE"
+          cmd.exe /d /c 'build\agent.exe check smoke entry'
+          Write-Host "cmd-check exit=$LASTEXITCODE"
           $request = '{"version":1,"emits":false,"agents":[{"sourceDir":"smoke","entryModule":"entry","limits":{}}],"imports":[],"input":"","config":""}'
           [IO.File]::WriteAllText('request.json', $request, [Text.UTF8Encoding]::new($false))
-          $output = cmd.exe /d /c 'build\agent.exe call < request.json'
+          Write-Host "request bytes=$([IO.File]::ReadAllBytes('request.json').Length)"
+          cmd.exe /d /c 'build\agent.exe call < request.json > response.json 2> stderr.txt'
           $exitCode = $LASTEXITCODE
-          Write-Host ($output -join "`n")
+          Write-Host "call exit=$exitCode"
+          Write-Host "response=$([IO.File]::ReadAllText('response.json'))"
+          Write-Host "stderr=$([IO.File]::ReadAllText('stderr.txt'))"
           if ($exitCode -ne 0) { exit $exitCode }
-          if (($output | ConvertFrom-Json).result.output -ne 'b2s=') { throw "runtime smoke test failed: $output" }
+          if (((Get-Content response.json -Raw | ConvertFrom-Json).result.output) -ne 'b2s=') { throw 'runtime smoke test failed' }
       - name: Package
         if: github.event_name != 'pull_request'
         shell: pwsh
