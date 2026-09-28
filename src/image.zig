@@ -17,8 +17,10 @@ pub const Image = struct {
     entry: [:0]const u8,
 
     pub fn init(allocator: Allocator, io: std.Io, source_dir: []const u8, entry_module: []const u8) !Image {
+        std.debug.print("image: open {s}\n", .{source_dir});
         if (entry_module.len == 0) return error.InvalidEntry;
         const directory = try std.Io.Dir.cwd().openDir(io, source_dir, .{ .iterate = true, .follow_symlinks = false });
+        std.debug.print("image: opened\n", .{});
         errdefer directory.close(io);
         var image = Image{
             .arena = std.heap.ArenaAllocator.init(allocator),
@@ -31,6 +33,7 @@ pub const Image = struct {
         const output = image.arena.allocator();
         var path: [std.Io.Dir.max_path_bytes]u8 = undefined;
         const length = try directory.realPath(io, &path);
+        std.debug.print("image: realpath {s}\n", .{path[0..length]});
         const extension = if (@import("builtin").os.tag == .windows) "dll" else "so";
         image.native_cpath = try std.fmt.allocPrint(output, "{s}{c}native{c}?.{s}", .{
             path[0..length], std.fs.path.sep, std.fs.path.sep, extension,
@@ -38,7 +41,9 @@ pub const Image = struct {
         image.entry = try output.dupeZ(u8, entry_module);
         var walker = try directory.walk(allocator);
         defer walker.deinit();
+        std.debug.print("image: compiler init\n", .{});
         const compiler = try zlua.Lua.init(allocator);
+        std.debug.print("image: compiler ready\n", .{});
         defer compiler.deinit();
         var modules: std.ArrayList(Module) = .empty;
         var names: std.StringHashMapUnmanaged(void) = .empty;
@@ -72,6 +77,7 @@ pub const Image = struct {
                 .bytecode = try compileChunk(output, allocator, compiler, source_bytes, entry.path),
             });
         }
+        std.debug.print("image: walked\n", .{});
         if (!names.contains(image.entry)) return error.MissingEntry;
         image.modules = modules.items;
         return image;
