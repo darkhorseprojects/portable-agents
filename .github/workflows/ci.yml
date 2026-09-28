@@ -197,7 +197,7 @@ jobs:
           Write-Host "direct-check exit=$LASTEXITCODE"
           cmd.exe /d /c 'build\agent.exe check smoke entry'
           Write-Host "cmd-check exit=$LASTEXITCODE"
-          $request = '{"version":1,"emits":false,"agents":[{"sourceDir":"smoke","entryModule":"entry","limits":{}}],"imports":[],"input":"","config":""}'
+          $request = '{"version":1,"emits":false,"profile":true,"agents":[{"sourceDir":"smoke","entryModule":"entry","limits":{}}],"imports":[],"input":"","config":""}'
           [IO.File]::WriteAllText('request.json', $request, [Text.UTF8Encoding]::new($false))
           Write-Host "request bytes=$([IO.File]::ReadAllBytes('request.json').Length)"
           cmd.exe /d /c 'build\agent.exe call < request.json > response.json 2> stderr.txt'
