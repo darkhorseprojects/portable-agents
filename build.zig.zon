@@ -1,6 +1,6 @@
 .{
     .name = .portable_agents,
-    .version = "0.1.4",
+    .version = "0.1.5",
     .fingerprint = 0x61ff4399196e353e,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{

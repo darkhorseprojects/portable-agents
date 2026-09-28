@@ -1,9 +1,10 @@
-# Portable Agents v0.1.4
+# Portable Agents v0.1.5
 
-Portable Agents now reads package sources correctly on Windows while preserving
-no-follow path handling. Windows x86-64 and ARM64 binaries are cross-compiled
-with native Zig and exercised on their native GitHub runners before packaging.
-The package format, protocol 1, and TypeScript SDK API are unchanged.
+The Windows ARM64 ReleaseSafe binary is no longer stripped. The v0.1.4 ARM64
+binary crashed on a real `agent call`; the v0.1.5 binary passes that call on a
+native ARM64 runner before packaging. All six binaries are tested on their
+target platforms. The package format, protocol 1, and TypeScript SDK API are
+unchanged.
 
 ## Runtime requirements
 
@@ -17,18 +18,18 @@ explicit target import library with `-Dlua-library`. Native Lua modules loaded
 by Portable Agents must target the same Lua 5.5 ABI.
 
 The TypeScript SDK is published as
-[`@darkhorseprojects/portable-agents@0.1.4`](https://jsr.io/@darkhorseprojects/portable-agents/0.1.4).
+[`@darkhorseprojects/portable-agents@0.1.5`](https://jsr.io/@darkhorseprojects/portable-agents/0.1.5).
 It does not contain a native binary or Lua runtime.
 
 ## Downloads
 
 | Platform            | Asset                                         |
 | ------------------- | --------------------------------------------- |
-| Linux x86-64        | `portable-agents-v0.1.4-linux-x86_64.tar.gz`  |
-| Linux ARM64         | `portable-agents-v0.1.4-linux-aarch64.tar.gz` |
-| macOS Intel         | `portable-agents-v0.1.4-macos-x86_64.tar.gz`  |
-| macOS Apple Silicon | `portable-agents-v0.1.4-macos-aarch64.tar.gz` |
-| Windows x86-64      | `portable-agents-v0.1.4-windows-x86_64.zip`   |
-| Windows ARM64       | `portable-agents-v0.1.4-windows-aarch64.zip`  |
+| Linux x86-64        | `portable-agents-v0.1.5-linux-x86_64.tar.gz`  |
+| Linux ARM64         | `portable-agents-v0.1.5-linux-aarch64.tar.gz` |
+| macOS Intel         | `portable-agents-v0.1.5-macos-x86_64.tar.gz`  |
+| macOS Apple Silicon | `portable-agents-v0.1.5-macos-aarch64.tar.gz` |
+| Windows x86-64      | `portable-agents-v0.1.5-windows-x86_64.zip`   |
+| Windows ARM64       | `portable-agents-v0.1.5-windows-aarch64.zip`  |
 
 Verify downloads against the release's `SHA256SUMS`.
