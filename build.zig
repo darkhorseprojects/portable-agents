@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .strip = optimize != .Debug,
+            .strip = optimize != .Debug and !(target.result.os.tag == .windows and target.result.cpu.arch == .aarch64),
             .imports = &.{.{ .name = "pa", .module = pa }},
         }),
     });
