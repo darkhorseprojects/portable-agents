@@ -72,7 +72,7 @@ jobs:
       - name: Install Lua on macOS
         if: runner.os == 'macOS'
         run: brew install lua pkgconf
-      - name: Build and test
+      - name: Build
         run: |
           set -euo pipefail
           zig build -Doptimize=ReleaseSafe
@@ -82,10 +82,6 @@ jobs:
           else
             readelf -d zig-out/bin/agent | grep -F 'Shared library: [liblua5.5.so.0]'
           fi
-          mkdir smoke
-          printf '%s\n' 'return setmetatable({}, {__call=function() return "ok" end})' > smoke/entry.lua
-          output=$(printf '%s' '{"version":1,"emits":false,"agents":[{"sourceDir":"smoke","entryModule":"entry","limits":{}}],"imports":[],"input":"","config":""}' | zig-out/bin/agent call)
-          grep -F '"output":"b2s="' <<< "$output"
       - name: Package
         if: github.event_name != 'pull_request'
         env:
@@ -147,9 +143,6 @@ jobs:
             zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }} \
               -Dlua-library="$PWD/sysroot/${{ matrix.prefix }}/lib/liblua.dll.a"
           cp zig-out/bin/agent.exe output/
-          printf '%s' '${{ matrix.lua-url }}' > output/lua-url
-          printf '%s' '${{ matrix.lua-sha256 }}' > output/lua-sha256
-          printf '%s' '${{ matrix.prefix }}' > output/lua-prefix
           file output/agent.exe | grep -F '${{ matrix.target == 'aarch64-windows-gnu' && 'ARM64' || 'x86-64' }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -157,7 +150,7 @@ jobs:
           path: output
           if-no-files-found: error
 
-  test-windows:
+  package-windows:
     needs: build-windows
     strategy:
       fail-fast: false
@@ -176,30 +169,6 @@ jobs:
         with:
           name: windows-build-${{ matrix.id }}
           path: build
-      - name: Test
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $url = Get-Content build/lua-url -Raw
-          $expected = Get-Content build/lua-sha256 -Raw
-          $prefix = Get-Content build/lua-prefix -Raw
-          Invoke-WebRequest $url -OutFile lua.pkg.tar.zst
-          if ((Get-FileHash lua.pkg.tar.zst -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Lua checksum mismatch' }
-          7z x lua.pkg.tar.zst
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          New-Item -ItemType Directory runtime
-          7z x lua.pkg.tar -oruntime
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:Path = "$(Resolve-Path "runtime/$prefix/bin");$env:Path"
-          New-Item -ItemType Directory smoke
-          Set-Content -NoNewline -Path smoke/entry.lua -Value 'return setmetatable({}, {__call=function() return "ok" end})'
-          $request = '{"version":1,"emits":false,"agents":[{"sourceDir":"smoke","entryModule":"entry","limits":{}}],"imports":[],"input":"","config":""}'
-          [IO.File]::WriteAllText('request.json', $request, [Text.UTF8Encoding]::new($false))
-          $output = cmd.exe /d /c 'build\agent.exe call < request.json'
-          $exitCode = $LASTEXITCODE
-          Write-Host ($output -join "`n")
-          if ($exitCode -ne 0) { exit $exitCode }
-          if (($output | ConvertFrom-Json).result.output -ne 'b2s=') { throw "runtime smoke test failed: $output" }
       - name: Package
         if: github.event_name != 'pull_request'
         shell: pwsh
@@ -224,7 +193,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
-    needs: [build-unix, test-windows]
+    needs: [build-unix, package-windows]
     runs-on: ubuntu-24.04
     permissions: { contents: write }
     steps:

@@ -74,6 +74,7 @@ pub const Control = struct {
     io: std.Io,
     cancellation: *Cancellation,
     remaining_instructions: u64,
+    instruction_exhausted: bool = false,
     sink: ?EventSink = null,
 };
 
@@ -93,16 +94,15 @@ pub fn protect(state: *zlua.Lua, args: zlua.Lua.ProtectedCallArgs) !void {
     const result = state.protectedCall(.{ .args = args.args, .results = args.results, .msg_handler = handler });
     if (result) |_| {
         state.remove(handler);
-    } else |_| {
+    } else |err| {
         if (control(state).sink) |sink| {
             const detail = state.toString(-1) catch "LuaFailure";
             var end = @min(2048, detail.len);
             while (end > 0 and !std.unicode.utf8ValidateSlice(detail[0..end])) end -= 1;
             sink.emit(.{ .traceback = if (end > 0) detail[0..end] else "LuaFailure" }) catch {};
         }
-        state.pop(1);
         state.remove(handler);
-        return if (control(state).cancellation.canceled()) error.Canceled else error.LuaFailure;
+        return if (control(state).cancellation.canceled()) error.Canceled else if (control(state).instruction_exhausted) error.InstructionLimit else if (err == error.LuaRuntime) error.LuaFailure else err;
     }
 }
 
@@ -152,6 +152,9 @@ fn hook(state: *zlua.Lua, _: zlua.Event, _: *zlua.DebugInfo) void {
         value.cancellation.cancel();
         state.raiseErrorStr("canceled", .{});
     };
-    if (value.remaining_instructions < hook_interval) state.raiseErrorStr("instruction limit exceeded", .{});
+    if (value.remaining_instructions < hook_interval) {
+        value.instruction_exhausted = true;
+        state.raiseErrorStr("instruction limit exceeded", .{});
+    }
     value.remaining_instructions -= hook_interval;
 }

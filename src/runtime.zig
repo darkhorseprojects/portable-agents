@@ -55,7 +55,13 @@ pub const Runtime = struct {
         }
     }
 
-    pub fn call(self: *Runtime, input: []const u8) ![]u8 {
+    pub fn call(self: *Runtime, input: []const u8, member: ?[]const u8) ![]u8 {
+        if (member) |name| {
+            for (self.entry.?.members) |item| {
+                if (std.mem.eql(u8, item.name, name)) return item.callable.call(self.quota.backing, input, self.config);
+            }
+            return error.UnknownMember;
+        }
         return self.entry.?.callable.call(self.quota.backing, input, self.config);
     }
 

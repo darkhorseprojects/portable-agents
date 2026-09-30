@@ -18,14 +18,14 @@ capabilities to use.
 
 - Compile a package's Lua modules and Markdown documents into a Portable Agents
   Image.
-- Invoke its configured entry module with byte input and config, or expose it as
-  an Import to another agent.
+- Invoke its configured entry module or a named member with byte input and
+  config, or expose it as an Import to another agent.
 - Use `require("pa")` for host operations and `require(name)` for explicitly
   granted Import modules.
 - Run Eval functions in independent states, passing supported native Lua values
   between them.
 - Stream opaque output bytes, incremental append bytes, and bounded stage logs
-  over protocol 1.
+  over protocol 2.
 - Limit Lua memory and instructions, and bound HTTP response bytes and chunks.
 
 The [wiki](https://github.com/darkhorseprojects/portable-agents/wiki) explains
@@ -48,7 +48,10 @@ metadata discoverable, then run `zig build -Doptimize=ReleaseSafe`.
 The executable is `agent`. The TypeScript SDK is in `sdk/mod.ts`; it uses Effect
 4 and starts one `agent call` child process per invocation. `Agent.call` returns
 terminal bytes. `Agent.stream` exposes protocol events, including optional
-profiling when explicitly enabled.
+profiling when explicitly enabled. Both methods accept
+`{ imports, member, profile }` as their third argument. Terminal failures carry
+`code`, `message`, and optional bounded `detail`; keep diagnostics private.
+Protocol 1 is not supported.
 
 ## Learn more
 

@@ -1,35 +1,41 @@
-# Portable Agents v0.1.5
+# Portable Agents v0.2.0
 
-The Windows ARM64 ReleaseSafe binary is no longer stripped. The v0.1.4 ARM64
-binary crashed on a real `agent call`; the v0.1.5 binary passes that call on a
-native ARM64 runner before packaging. All six binaries are tested on their
-target platforms. The package format, protocol 1, and TypeScript SDK API are
-unchanged.
+Coordinated breaking update for Zinc and Agent Connector. These notes describe
+the source release; publication is a separate step.
 
-## Runtime requirements
+- Protocol 2 supports an optional named entry `member`.
+- Terminal errors contain `{code,message,detail}`. There are no separate
+  traceback wire frames.
+- Lua bytecode retains source locations. Compiler and HTTP callback failures
+  retain useful diagnostics.
+- Eval sources are named `eval:1`, `eval:2`, and so on. Ordinary source failures
+  remain result tuples; exhausted instruction quotas abort the call.
+- SDK `call` and `stream` take `{imports,member,profile}` as their third
+  argument.
+- Native `Agent.init` accepts an optional diagnostic sink; `Agent.call` accepts
+  `CallOptions`.
+- Behavior-test fixtures and CI behavior tests have been removed. CI retains
+  formatting, builds, ABI inspection, and archive verification.
 
-`agent` requires an architecture-compatible Lua 5.5 shared library discoverable
-by the operating system's dynamic loader. It requests `liblua5.5.so.0` on Linux,
-`@rpath/liblua.5.5.dylib` on macOS, and `lua55.dll` on Windows. Release archives
-contain only `agent`, README, and LICENSE; they do not contain Lua.
+## Requirements
 
-Native builds discover Lua 5.5 through `pkg-config`. Cross-builds may provide an
-explicit target import library with `-Dlua-library`. Native Lua modules loaded
-by Portable Agents must target the same Lua 5.5 ABI.
+Build with Zig 0.16.x and Lua 5.5 development headers. Runtime binaries require
+an architecture-compatible shared Lua library: `liblua5.5.so.0` on Linux,
+`@rpath/liblua.5.5.dylib` on macOS, or `lua55.dll` on Windows. Archives contain
+`agent`, README, and LICENSE, not Lua. Native package modules must use the same
+Lua ABI.
 
-The TypeScript SDK is published as
-[`@darkhorseprojects/portable-agents@0.1.5`](https://jsr.io/@darkhorseprojects/portable-agents/0.1.5).
-It does not contain a native binary or Lua runtime.
+Protocol 1 callers and the old SDK call signature must be updated together.
+Native calls still return owned output bytes or a Zig error; embedders receive
+diagnostic events through their sink.
 
-## Downloads
+## Publication
 
-| Platform            | Asset                                         |
-| ------------------- | --------------------------------------------- |
-| Linux x86-64        | `portable-agents-v0.1.5-linux-x86_64.tar.gz`  |
-| Linux ARM64         | `portable-agents-v0.1.5-linux-aarch64.tar.gz` |
-| macOS Intel         | `portable-agents-v0.1.5-macos-x86_64.tar.gz`  |
-| macOS Apple Silicon | `portable-agents-v0.1.5-macos-aarch64.tar.gz` |
-| Windows x86-64      | `portable-agents-v0.1.5-windows-x86_64.zip`   |
-| Windows ARM64       | `portable-agents-v0.1.5-windows-aarch64.zip`  |
+Publish PA binaries and SDK 0.2.0 before Agent Connector and Zinc. Connector's
+registry lock must be refreshed against the published SDK before its frozen
+registry build. The local coordinated build uses the SDK source directly and
+does not require publication.
 
-Verify downloads against the release's `SHA256SUMS`.
+Release jobs target Linux x86-64/ARM64, macOS Intel/Apple Silicon, and Windows
+x86-64/ARM64. Verify published downloads against `SHA256SUMS`. Local validation
+does not establish that every target binary has been executed.

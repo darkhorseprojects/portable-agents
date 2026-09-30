@@ -6,6 +6,12 @@ const runtime = @import("runtime.zig");
 
 const Allocator = std.mem.Allocator;
 
+pub const CallOptions = struct {
+    emits: bool = false,
+    member: ?[]const u8 = null,
+    sink: ?lua.EventSink = null,
+};
+
 pub const Import = struct {
     name: []const u8,
     agent: *Agent,
@@ -17,12 +23,12 @@ pub const Agent = struct {
     client: std.http.Client,
     image: Image,
 
-    pub fn init(allocator: Allocator, io: std.Io, source_dir: []const u8, entry_module: []const u8, limits: lua.Limits) !Agent {
+    pub fn init(allocator: Allocator, io: std.Io, source_dir: []const u8, entry_module: []const u8, limits: lua.Limits, sink: ?lua.EventSink) !Agent {
         if (source_dir.len == 0 or limits.memory_bytes == 0 or limits.instructions == 0) return error.InvalidOptions;
         return .{
             .limits = limits,
             .client = .{ .allocator = allocator, .io = io },
-            .image = try .init(allocator, io, source_dir, entry_module),
+            .image = try .init(allocator, io, source_dir, entry_module, sink),
         };
     }
 
@@ -31,18 +37,14 @@ pub const Agent = struct {
         self.client.deinit();
     }
 
-    pub fn call(self: *Agent, allocator: Allocator, input: []const u8, config: []const u8, imports: []const Import) ![]u8 {
-        return self.callWithEvents(allocator, input, config, imports, false, null);
-    }
-
-    pub fn callWithEvents(self: *Agent, allocator: Allocator, input: []const u8, config: []const u8, imports: []const Import, emits: bool, sink: ?lua.EventSink) ![]u8 {
+    pub fn call(self: *Agent, allocator: Allocator, input: []const u8, config: []const u8, imports: []const Import, options: CallOptions) ![]u8 {
         for (imports) |item| if (item.agent == self) return error.LocalImport;
         var cancellation: lua.Cancellation = .{};
         var owner: runtime.Runtime = undefined;
-        try owner.init(allocator, self, config, imports, &cancellation, emits, sink);
+        try owner.init(allocator, self, config, imports, &cancellation, options.emits, options.sink);
         defer owner.deinit();
         try eval.install(&owner);
         try owner.resolve();
-        return owner.call(input);
+        return owner.call(input, options.member);
     }
 };

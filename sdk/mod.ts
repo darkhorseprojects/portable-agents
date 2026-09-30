@@ -1,17 +1,23 @@
 import { type Cause, Effect, Encoding, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-const fail = (code: string) => new AgentError({ code });
+const fail = (code: string, message = code) =>
+  new AgentError({ code, message });
 
 const Frame = Schema.fromJsonString(Schema.Union([
   Schema.Struct({ emit: Schema.Uint8ArrayFromBase64 }),
   Schema.Struct({ append: Schema.Uint8ArrayFromBase64 }),
   Schema.Struct({ log: Schema.String, atUs: Schema.optional(Schema.Number) }),
-  Schema.Struct({ traceback: Schema.String }),
   Schema.Struct({
     result: Schema.Union([
       Schema.Struct({ output: Schema.Uint8ArrayFromBase64 }),
-      Schema.Struct({ error: Schema.String }),
+      Schema.Struct({
+        error: Schema.Struct({
+          code: Schema.String,
+          message: Schema.String,
+          detail: Schema.NullOr(Schema.String),
+        }),
+      }),
     ]),
   }),
 ]));
@@ -35,24 +41,32 @@ export interface AgentOptions {
   readonly environment?: Readonly<Record<string, string>>;
 }
 
+export interface CallOptions {
+  readonly imports?: readonly Import[];
+  readonly member?: string;
+  readonly profile?: boolean;
+}
+
 export type AgentEvent =
   | { readonly type: "emit"; readonly output: Uint8Array }
   | { readonly type: "append"; readonly output: Uint8Array }
   | { readonly type: "log"; readonly stage: string; readonly atUs?: number }
-  | { readonly type: "traceback"; readonly detail: string }
   | { readonly type: "result"; readonly output: Uint8Array };
 
 export interface AgentError extends Cause.YieldableError {
   readonly _tag: "AgentError";
   readonly code: string;
+  readonly message: string;
   readonly detail?: string;
 }
 
 export const AgentError: new (fields: {
   readonly code: string;
+  readonly message: string;
   readonly detail?: string;
 }) => AgentError = Schema.TaggedError<AgentError>()("AgentError", {
   code: Schema.String,
+  message: Schema.String,
   detail: Schema.optional(Schema.String),
 });
 
@@ -64,26 +78,25 @@ export class Agent {
   call(
     input: Uint8Array,
     config: Uint8Array,
-    imports: readonly Import[] = [],
+    options: CallOptions = {},
   ): Effect.Effect<
     Uint8Array,
     AgentError,
     ChildProcessSpawner.ChildProcessSpawner
   > {
-    return call(this, input, config, imports);
+    return call(this, input, config, options);
   }
 
   stream(
     input: Uint8Array,
     config: Uint8Array,
-    imports: readonly Import[] = [],
-    profile = false,
+    options: CallOptions = {},
   ): Stream.Stream<
     AgentEvent,
     AgentError,
     ChildProcessSpawner.ChildProcessSpawner
   > {
-    return events(this, input, config, imports, true, profile);
+    return events(this, input, config, options, true);
   }
 }
 
@@ -104,9 +117,9 @@ const call = Effect.fn("Agent.call")(
     agent: Agent,
     input: Uint8Array,
     config: Uint8Array,
-    imports: readonly Import[],
+    options: CallOptions,
   ) {
-    const result = yield* events(agent, input, config, imports, false, false)
+    const result = yield* events(agent, input, config, options, false)
       .pipe(
         Stream.runFold(
           () => undefined as Uint8Array | undefined,
@@ -123,15 +136,14 @@ function events(
   agent: Agent,
   input: Uint8Array,
   config: Uint8Array,
-  imports: readonly Import[],
+  options: CallOptions,
   emits: boolean,
-  profile: boolean,
 ) {
   return Stream.unwrap(Effect.gen(function* () {
     const request = yield* Effect.try({
       try: () =>
         new TextEncoder().encode(
-          JSON.stringify(encode(agent, input, config, imports, emits, profile)),
+          JSON.stringify(encode(agent, input, config, options, emits)),
         ),
       catch: () => fail("InvalidImport"),
     });
@@ -143,7 +155,6 @@ function events(
       forceKillAfter: "1 second",
     });
     let terminal = false;
-    let traceback: string | undefined;
     const frames = handle.stdout.pipe(
       Stream.decodeText(),
       Stream.splitLines,
@@ -163,15 +174,12 @@ function events(
           if ("log" in frame) {
             return { type: "log", stage: frame.log, atUs: frame.atUs } as const;
           }
-          if ("traceback" in frame) {
-            traceback = frame.traceback;
-            return { type: "traceback", detail: traceback } as const;
-          }
           terminal = true;
           if ("error" in frame.result) {
             return yield* new AgentError({
-              code: frame.result.error || "AgentFailure",
-              detail: traceback,
+              code: frame.result.error.code,
+              message: frame.result.error.message,
+              detail: frame.result.error.detail ?? undefined,
             });
           }
           return { type: "result", output: frame.result.output } as const;
@@ -187,7 +195,9 @@ function events(
     return frames.pipe(Stream.concat(completed));
   })).pipe(
     Stream.mapError((error) =>
-      error instanceof AgentError ? error : fail("ProcessFailure")
+      error instanceof AgentError
+        ? error
+        : fail("ProcessFailure", String(error))
     ),
   );
 }
@@ -196,9 +206,8 @@ function encode(
   root: Agent,
   input: Uint8Array,
   config: Uint8Array,
-  values: readonly Import[],
+  options: CallOptions,
   emits: boolean,
-  profile: boolean,
 ) {
   const agents: Array<{
     sourceDir: string;
@@ -223,15 +232,16 @@ function encode(
     return index;
   };
   add(root);
-  const imports = values.map((value) => ({
+  const imports = (options.imports ?? []).map((value) => ({
     name: value.name,
     agent: add(value.agent),
     config: Encoding.encodeBase64(value.config),
   }));
   return {
-    version: 1,
+    version: 2,
     emits,
-    profile,
+    profile: options.profile ?? false,
+    member: options.member,
     agents,
     imports,
     input: Encoding.encodeBase64(input),

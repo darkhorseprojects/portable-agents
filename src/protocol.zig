@@ -22,6 +22,7 @@ const Request = struct {
     version: u8,
     emits: bool,
     profile: bool = false,
+    member: ?[]const u8 = null,
     agents: []const WireAgent,
     imports: []const WireImport = &.{},
     input: []const u8,
@@ -35,6 +36,7 @@ const Output = struct {
     started: std.Io.Timestamp,
     profile: bool = false,
     mutex: std.Io.Mutex = .init,
+    detail: ?[]u8 = null,
 
     fn event(context: *anyopaque, value: pa.Event) !void {
         const self: *Output = @ptrCast(@alignCast(context));
@@ -55,7 +57,13 @@ const Output = struct {
                     });
                 } else try write(self.writer, .{ .log = stage });
             },
-            .traceback => |detail| try write(self.writer, .{ .traceback = detail }),
+            .traceback => |detail| {
+                if (self.detail) |previous| self.allocator.free(previous);
+                self.detail = null;
+                var end = @min(2048, detail.len);
+                while (end > 0 and !std.unicode.utf8ValidateSlice(detail[0..end])) end -= 1;
+                self.detail = try self.allocator.dupe(u8, detail[0..end]);
+            },
         }
     }
 
@@ -66,12 +74,17 @@ const Output = struct {
             const encoded = try self.allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
             defer self.allocator.free(encoded);
             try write(self.writer, .{ .result = .{ .output = std.base64.standard.Encoder.encode(encoded, bytes) } });
-        } else |err| try write(self.writer, .{ .result = .{ .@"error" = @errorName(err) } });
+        } else |err| {
+            const detail = if (err == error.LuaFailure or err == error.LuaSyntax or err == error.OutOfMemory or err == error.Canceled or err == error.InstructionLimit) self.detail else null;
+            const message = if (detail) |text| text[0 .. std.mem.indexOfScalar(u8, text, '\n') orelse text.len] else @errorName(err);
+            try write(self.writer, .{ .result = .{ .@"error" = .{ .code = @errorName(err), .message = message, .detail = detail } } });
+        }
     }
 };
 
 pub fn call(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, writer: *std.Io.Writer) !void {
     var output: Output = .{ .allocator = allocator, .io = io, .writer = writer, .started = std.Io.Clock.awake.now(io) };
+    defer if (output.detail) |detail| allocator.free(detail);
     const outcome = run(allocator, io, reader, &output);
     defer if (outcome) |bytes| allocator.free(bytes) else |_| {};
     try output.finish(outcome);
@@ -84,7 +97,7 @@ fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, output: *Output
     const bytes = try reader.allocRemaining(scratch, .unlimited);
     if (bytes.len == 0) return error.MissingRequest;
     const request = try std.json.parseFromSliceLeaky(Request, scratch, bytes, .{});
-    if (request.version != 1 or request.agents.len == 0) return error.InvalidProtocol;
+    if (request.version != 2 or request.agents.len == 0) return error.InvalidProtocol;
     output.profile = request.profile;
     const input = try decodeBase64(scratch, request.input);
     const config = try decodeBase64(scratch, request.config);
@@ -112,14 +125,14 @@ fn run(allocator: Allocator, io: std.Io, reader: *std.Io.Reader, output: *Output
         var limits: pa.Limits = .{};
         if (wire.limits.memoryBytes) |memory_bytes| limits.memory_bytes = memory_bytes;
         if (wire.limits.instructions) |instructions| limits.instructions = try std.fmt.parseInt(u64, instructions, 10);
-        agent.* = try pa.Agent.init(allocator, io, wire.sourceDir, wire.entryModule, limits);
+        agent.* = try pa.Agent.init(allocator, io, wire.sourceDir, wire.entryModule, limits, .{ .context = output, .write = Output.event });
         initialized += 1;
     }
     if (output.profile) try Output.event(output, .{ .log = "image.compile.end" });
-    return agents[0].callWithEvents(allocator, input, config, imports, request.emits, .{
-        .context = output,
-        .write = Output.event,
-        .profile = output.profile,
+    return agents[0].call(allocator, input, config, imports, .{
+        .emits = request.emits,
+        .member = request.member,
+        .sink = .{ .context = output, .write = Output.event, .profile = output.profile },
     });
 }
 

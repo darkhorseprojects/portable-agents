@@ -59,6 +59,7 @@ fn dispatch(state: *zlua.Lua) !i32 {
     for (futures) |*future| {
         if (if (owner.control.cancellation.canceled()) future.cancel(owner.control.io) else future.await(owner.control.io)) |_| {} else |err| {
             if (err == error.Canceled) owner.control.cancellation.cancel();
+            if (err == error.InstructionLimit) owner.control.instruction_exhausted = true;
         }
     }
     defer for (futures) |future| if (future.result) |result| owner.quota.backing.free(result.value) else |_| {};
@@ -164,7 +165,9 @@ fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const 
     const format = state.absIndex(-1);
     state.pushFunction(zlua.wrap(lua.traceback));
     const message_handler = state.getTop();
-    state.loadBuffer(code, "eval", .text) catch |err| return rejected(&owner, state, err, error.LuaSyntax);
+    var chunk_buffer: [40]u8 = undefined;
+    const chunk_name = try std.fmt.bufPrintZ(&chunk_buffer, "eval:{d}", .{source_index});
+    state.loadBuffer(code, chunk_name, .text) catch |err| return rejected(&owner, state, err, error.LuaSyntax);
     state.pushValue(environment);
     if (state.setUpvalue(-2, 1)) |name| {
         if (!std.mem.eql(u8, name, "_ENV")) return error.InvalidEvalChunk;
@@ -183,6 +186,7 @@ fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const 
 
 fn rejected(owner: *runtime.Runtime, state: *zlua.Lua, err: anyerror, expected: anyerror) anyerror!EvalResult {
     if (owner.control.cancellation.canceled()) return error.Canceled;
+    if (lua.control(state).instruction_exhausted) return error.InstructionLimit;
     if (err != expected) return err;
     return .{ .ok = false, .value = try owner.quota.backing.dupe(u8, state.toString(-1) catch unreachable) };
 }

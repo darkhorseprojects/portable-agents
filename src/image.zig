@@ -1,6 +1,7 @@
 const std = @import("std");
 const zlua = @import("zlua");
 const markdown = @import("markdown.zig");
+const diagnostics = @import("lua.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -16,7 +17,7 @@ pub const Image = struct {
     modules: []const Module,
     entry: [:0]const u8,
 
-    pub fn init(allocator: Allocator, io: std.Io, source_dir: []const u8, entry_module: []const u8) !Image {
+    pub fn init(allocator: Allocator, io: std.Io, source_dir: []const u8, entry_module: []const u8, sink: ?diagnostics.EventSink) !Image {
         if (entry_module.len == 0) return error.InvalidEntry;
         const directory = try std.Io.Dir.cwd().openDir(io, source_dir, .{ .iterate = true, .follow_symlinks = false });
         errdefer directory.close(io);
@@ -69,7 +70,7 @@ pub const Image = struct {
             if ((try names.getOrPut(allocator, name)).found_existing) return error.DuplicateModule;
             try modules.append(output, .{
                 .name = name,
-                .bytecode = try compileChunk(output, allocator, compiler, source_bytes, entry.path),
+                .bytecode = try compileChunk(output, allocator, compiler, source_bytes, entry.path, sink),
             });
         }
         if (!names.contains(image.entry)) return error.MissingEntry;
@@ -83,10 +84,13 @@ pub const Image = struct {
     }
 };
 
-fn compileChunk(output: Allocator, scratch: Allocator, lua: *zlua.Lua, source: []const u8, name: []const u8) ![]const u8 {
+fn compileChunk(output: Allocator, scratch: Allocator, lua: *zlua.Lua, source: []const u8, name: []const u8, sink: ?diagnostics.EventSink) ![]const u8 {
     const chunk_name = try scratch.dupeZ(u8, name);
     defer scratch.free(chunk_name);
-    try lua.loadBuffer(source, chunk_name, .text);
+    lua.loadBuffer(source, chunk_name, .text) catch |err| {
+        if (sink) |value| try value.emit(.{ .traceback = lua.toString(-1) catch @errorName(err) });
+        return err;
+    };
     var bytes = std.Io.Writer.Allocating.init(output);
     errdefer bytes.deinit();
     try lua.dump(zlua.wrap(struct {
@@ -95,7 +99,7 @@ fn compileChunk(output: Allocator, scratch: Allocator, lua: *zlua.Lua, source: [
             writer.writer.writeAll(part) catch return false;
             return true;
         }
-    }.write), &bytes, true);
+    }.write), &bytes, false);
     lua.pop(1);
     return bytes.toOwnedSlice();
 }

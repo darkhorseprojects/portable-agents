@@ -9,6 +9,13 @@ pub fn install(lua: *zlua.Lua, client: *std.http.Client) void {
 }
 
 fn httpRequest(lua: *zlua.Lua) !i32 {
+    return perform(lua) catch |err| {
+        if (err == error.LuaFailure) lua.raiseError();
+        return err;
+    };
+}
+
+fn perform(lua: *zlua.Lua) !i32 {
     errdefer lua_state.control(lua).io.checkCancel() catch lua_state.control(lua).cancellation.cancel();
     if (lua.typeOf(1) != .string or lua.typeOf(2) != .string or lua.typeOf(3) != .string or
         (!lua.isNoneOrNil(4) and lua.typeOf(4) != .string) or

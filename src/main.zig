@@ -5,7 +5,14 @@ const protocol = @import("protocol.zig");
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len == 4 and std.mem.eql(u8, args[1], "check")) {
-        var agent = try pa.Agent.init(init.gpa, init.io, args[2], args[3], .{});
+        var agent = try pa.Agent.init(init.gpa, init.io, args[2], args[3], .{}, .{
+            .context = undefined,
+            .write = struct {
+                fn diagnostic(_: *anyopaque, event: pa.Event) !void {
+                    if (event == .traceback) std.debug.print("{s}\n", .{event.traceback});
+                }
+            }.diagnostic,
+        });
         agent.deinit();
         return;
     }
