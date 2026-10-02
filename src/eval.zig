@@ -32,14 +32,15 @@ fn dispatch(state: *zlua.Lua) !i32 {
     const owner: *runtime.Runtime = @ptrCast(@alignCast(@constCast(state.toPointer(zlua.Lua.upvalueIndex(1)).?)));
     if (!state.isTable(1)) return error.ExpectedEvalView;
     const input = try lua.bytes(state, 3);
-    var selected: std.ArrayList(usize) = .empty;
+    var selected: std.ArrayList([]const u8) = .empty;
     defer selected.deinit(state.allocator());
     const view = state.absIndex(1);
     state.pushNil();
     while (state.next(view)) {
         if (state.typeOf(-2) != .string) return error.InvalidEvalView;
-        const member = owner.entry.?.select(-1, try state.toString(-2)) orelse return error.InvalidEvalView;
-        try selected.append(state.allocator(), member);
+        const name = try state.toString(-2);
+        if (!owner.entry.?.select(-1, name)) return error.InvalidEvalView;
+        try selected.append(state.allocator(), name);
         state.pop(1);
     }
     if (!state.isTable(2)) return error.ExpectedEvalSources;
@@ -76,7 +77,7 @@ fn dispatch(state: *zlua.Lua) !i32 {
     return 1;
 }
 
-fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const u8, input: []const u8, source_index: usize) anyerror!EvalResult {
+fn evaluate(template: *runtime.Runtime, selection: []const []const u8, code: []const u8, input: []const u8, source_index: usize) anyerror!EvalResult {
     if (template.control.sink) |sink| {
         if (sink.profile) {
             var buffer: [80]u8 = undefined;
@@ -107,10 +108,9 @@ fn evaluate(template: *runtime.Runtime, selection: []const usize, code: []const 
     state.openUtf8();
     state.createTable(0, @intCast(selection.len));
     const self = state.absIndex(-1);
-    for (selection) |index| {
-        const member = &owner.entry.?.members[index];
-        _ = state.pushString(member.name);
-        module.pushNativeProxy(state, &member.callable, &owner.config, false);
+    for (selection) |name| {
+        _ = state.pushString(name);
+        module.pushNativeProxy(state, &owner.entry.?, &owner.config, name, false);
         state.setTableRaw(self);
     }
     state.createTable(0, @intCast(owner.imports.items.len));

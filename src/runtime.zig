@@ -56,13 +56,7 @@ pub const Runtime = struct {
     }
 
     pub fn call(self: *Runtime, input: []const u8, member: ?[]const u8) ![]u8 {
-        if (member) |name| {
-            for (self.entry.?.members) |item| {
-                if (std.mem.eql(u8, item.name, name)) return item.callable.call(self.quota.backing, input, self.config);
-            }
-            return error.UnknownMember;
-        }
-        return self.entry.?.callable.call(self.quota.backing, input, self.config);
+        return self.entry.?.call(self.quota.backing, input, self.config, member);
     }
 
     pub fn resolve(self: *Runtime) !void {
@@ -73,7 +67,7 @@ pub const Runtime = struct {
     }
 
     pub fn deinit(self: *Runtime) void {
-        if (self.entry) |entry| entry.deinit(self.state.allocator());
+        if (self.entry) |entry| entry.deinit();
         self.state.deinit();
         while (self.imports.items.len > 0) {
             self.imports.items[self.imports.items.len - 1].runtime.deinit();
@@ -150,6 +144,30 @@ fn initialize(state: *zlua.Lua) !i32 {
         \\  __newindex=function() error("immutable document",2) end,
         \\  __len=function() return #data end,
         \\  __pairs=function() return next,data,nil end,
+        \\  __tostring=function()
+        \\   local output={}
+        \\   local function collect(item)
+        \\    if type(item)=="string" then
+        \\     output[#output+1]=item
+        \\    elseif type(item)=="table" then
+        \\     for index=1,#item do
+        \\      collect(item[index])
+        \\     end
+        \\     local keys={}
+        \\     for key in pairs(item) do
+        \\      if type(key)=="string" then
+        \\       keys[#keys+1]=key
+        \\      end
+        \\     end
+        \\     table.sort(keys)
+        \\     for _,key in ipairs(keys) do
+        \\      collect(item[key])
+        \\     end
+        \\    end
+        \\   end
+        \\   collect(data)
+        \\   return table.concat(output,"\n")
+        \\  end,
         \\  __metatable=false,
         \\ })
         \\end
@@ -219,6 +237,6 @@ fn resolveEntry(state: *zlua.Lua) !i32 {
     _ = state.getGlobal("require");
     _ = state.pushString(self.image.entry);
     state.call(.{ .args = 1, .results = 1 });
-    self.entry = try module.Resolved.capture(state.allocator(), state, -1);
+    self.entry = try module.Resolved.capture(state, -1);
     return 0;
 }

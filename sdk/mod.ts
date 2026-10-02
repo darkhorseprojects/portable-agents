@@ -60,11 +60,9 @@ export interface AgentError extends Cause.YieldableError {
   readonly detail?: string;
 }
 
-export const AgentError: new (fields: {
-  readonly code: string;
-  readonly message: string;
-  readonly detail?: string;
-}) => AgentError = Schema.TaggedError<AgentError>()("AgentError", {
+export const AgentError: new (
+  fields: Pick<AgentError, "code" | "message" | "detail">,
+) => AgentError = Schema.TaggedError<AgentError>()("AgentError", {
   code: Schema.String,
   message: Schema.String,
   detail: Schema.optional(Schema.String),
@@ -84,7 +82,17 @@ export class Agent {
     AgentError,
     ChildProcessSpawner.ChildProcessSpawner
   > {
-    return call(this, input, config, options);
+    return Effect.gen({ self: this }, function* () {
+      const result = yield* events(this, input, config, options, false).pipe(
+        Stream.runFold(
+          () => undefined as Uint8Array | undefined,
+          (previous, event: AgentEvent) =>
+            event.type === "result" ? event.output : previous,
+        ),
+      );
+      if (result === undefined) return yield* fail("InvalidProtocol");
+      return result;
+    }).pipe(Effect.withSpan("Agent.call"));
   }
 
   stream(
@@ -111,26 +119,6 @@ export const make: (options: AgentOptions) => Effect.Effect<Agent, AgentError> =
     ) return yield* fail("InvalidOptions");
     return new Agent({ ...options, executable });
   });
-
-const call = Effect.fn("Agent.call")(
-  function* (
-    agent: Agent,
-    input: Uint8Array,
-    config: Uint8Array,
-    options: CallOptions,
-  ) {
-    const result = yield* events(agent, input, config, options, false)
-      .pipe(
-        Stream.runFold(
-          () => undefined as Uint8Array | undefined,
-          (previous, event: AgentEvent) =>
-            event.type === "result" ? event.output : previous,
-        ),
-      );
-    if (result === undefined) return yield* fail("InvalidProtocol");
-    return result;
-  },
-);
 
 function events(
   agent: Agent,
@@ -209,32 +197,13 @@ function encode(
   options: CallOptions,
   emits: boolean,
 ) {
-  const agents: Array<{
-    sourceDir: string;
-    entryModule: string;
-    limits: { memoryBytes?: number; instructions?: string };
-  }> = [];
-  const indices = new Map<Agent, number>();
-  const add = (agent: Agent) => {
-    const existing = indices.get(agent);
-    if (existing !== undefined) return existing;
-    const index = agents.length;
-    const spec = agent.spec;
-    indices.set(agent, index);
-    agents.push({
-      sourceDir: spec.sourceDir,
-      entryModule: spec.entryModule,
-      limits: {
-        memoryBytes: spec.memoryBytes,
-        instructions: spec.instructions?.toString(),
-      },
-    });
-    return index;
-  };
-  add(root);
+  const indices = new Map<Agent, number>([[root, 0]]);
+  for (const { agent } of options.imports ?? []) {
+    if (!indices.has(agent)) indices.set(agent, indices.size);
+  }
   const imports = (options.imports ?? []).map((value) => ({
     name: value.name,
-    agent: add(value.agent),
+    agent: indices.get(value.agent)!,
     config: Encoding.encodeBase64(value.config),
   }));
   return {
@@ -242,7 +211,14 @@ function encode(
     emits,
     profile: options.profile ?? false,
     member: options.member,
-    agents,
+    agents: Array.from(indices.keys(), ({ spec }) => ({
+      sourceDir: spec.sourceDir,
+      entryModule: spec.entryModule,
+      limits: {
+        memoryBytes: spec.memoryBytes,
+        instructions: spec.instructions?.toString(),
+      },
+    })),
     imports,
     input: Encoding.encodeBase64(input),
     config: Encoding.encodeBase64(config),
