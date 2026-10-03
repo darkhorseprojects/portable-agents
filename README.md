@@ -51,7 +51,9 @@ terminal bytes. `Agent.stream` exposes protocol events, including optional
 profiling when explicitly enabled. Both methods accept
 `{ imports, member, profile }` as their third argument. Terminal failures carry
 `code`, `message`, and optional bounded `detail`; keep diagnostics private.
-Protocol 1 is not supported.
+Protocol 1 is not supported. The SDK includes module examples and JSDoc for its
+public types, settings, events, errors, and methods; these generate JSR/editor
+documentation. Preview it locally with `deno doc sdk/mod.ts`.
 
 ## Learn more
 
