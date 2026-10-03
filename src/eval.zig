@@ -57,13 +57,16 @@ fn dispatch(state: *zlua.Lua) !i32 {
         future.* = owner.control.io.async(evaluate, .{ owner, selected.items, lua.bytes(state, -1) catch unreachable, input, index });
         state.pop(1);
     }
+    var failure: ?anyerror = null;
     for (futures) |*future| {
         if (if (owner.control.cancellation.canceled()) future.cancel(owner.control.io) else future.await(owner.control.io)) |_| {} else |err| {
             if (err == error.Canceled) owner.control.cancellation.cancel();
             if (err == error.InstructionLimit) owner.control.instruction_exhausted = true;
+            if (failure == null or err == error.InstructionLimit or failure.? == error.Canceled) failure = err;
         }
     }
     defer for (futures) |future| if (future.result) |result| owner.quota.backing.free(result.value) else |_| {};
+    if (failure) |err| return err;
     state.createTable(count, 0);
     for (futures, 1..) |future, index| {
         const result = try future.result;
@@ -78,6 +81,7 @@ fn dispatch(state: *zlua.Lua) !i32 {
 }
 
 fn evaluate(template: *runtime.Runtime, selection: []const []const u8, code: []const u8, input: []const u8, source_index: usize) anyerror!EvalResult {
+    errdefer template.control.cancellation.cancel();
     if (template.control.sink) |sink| {
         if (sink.profile) {
             var buffer: [80]u8 = undefined;
@@ -185,8 +189,8 @@ fn evaluate(template: *runtime.Runtime, selection: []const []const u8, code: []c
 }
 
 fn rejected(owner: *runtime.Runtime, state: *zlua.Lua, err: anyerror, expected: anyerror) anyerror!EvalResult {
-    if (owner.control.cancellation.canceled()) return error.Canceled;
     if (lua.control(state).instruction_exhausted) return error.InstructionLimit;
+    if (owner.control.cancellation.canceled()) return error.Canceled;
     if (err != expected) return err;
     return .{ .ok = false, .value = try owner.quota.backing.dupe(u8, state.toString(-1) catch unreachable) };
 }

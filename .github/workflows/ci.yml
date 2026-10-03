@@ -19,25 +19,32 @@ concurrency:
   group: ${{ github.workflow }}-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: ${{ inputs.release_tag == '' && !startsWith(github.ref, 'refs/tags/') }}
 
+env:
+  DENO_DIR: ${{ github.workspace }}/../deno-cache
+
 jobs:
   verify:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.release_tag != '' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           persist-credentials: false
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with: { version: 0.16.0 }
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
         with: { deno-version: v2.9.3 }
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ env.DENO_DIR }}
+          key: deno-2.9.3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deno.lock') }}
       - name: Verify source
         run: |
           zig fmt --check build.zig src
           deno fmt --check
           deno lint --rules-include=no-slow-types
           deno check --frozen sdk/mod.ts
-          deno publish --dry-run
+          deno publish --dry-run --no-check --frozen-lockfile
           deno_version=$(deno eval 'console.log(JSON.parse(Deno.readTextFileSync("deno.json")).version)')
           zig_version=$(awk -F'"' '/^[[:space:]]*[.]version =/{print $2; exit}' build.zig.zon)
           test "$deno_version" = "$zig_version"
@@ -62,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.release_tag != '' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           persist-credentials: false
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with: { version: 0.16.0 }
@@ -82,8 +89,14 @@ jobs:
           else
             readelf -d zig-out/bin/agent | grep -F 'Shared library: [liblua5.5.so.0]'
           fi
+          python3 - <<'PYCODE'
+          import json, subprocess
+          request = {"version": 1, "emits": False, "agents": [], "input": "", "config": ""}
+          call = subprocess.run(["zig-out/bin/agent", "call"], input=json.dumps(request), text=True, stdout=subprocess.PIPE, check=True)
+          assert json.loads(call.stdout)["result"]["error"]["code"] == "InvalidProtocol"
+          PYCODE
       - name: Package
-        if: github.event_name != 'pull_request'
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
         env:
           TARGET_ID: ${{ matrix.id }}
         run: |
@@ -126,11 +139,11 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.release_tag != '' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           persist-credentials: false
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
         with: { version: 0.16.0 }
-      - run: sudo apt-get update && sudo apt-get install --yes pkgconf zstd
+      - run: sudo apt-get update && sudo apt-get install --yes pkgconf zstd llvm
       - name: Build Windows target
         run: |
           set -euo pipefail
@@ -144,46 +157,28 @@ jobs:
               -Dlua-library="$PWD/sysroot/${{ matrix.prefix }}/lib/liblua.dll.a"
           cp zig-out/bin/agent.exe output/
           file output/agent.exe | grep -F '${{ matrix.target == 'aarch64-windows-gnu' && 'ARM64' || 'x86-64' }}'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: windows-build-${{ matrix.id }}
-          path: output
-          if-no-files-found: error
-
-  package-windows:
-    needs: build-windows
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: windows-latest, id: windows-x86_64 }
-          - { os: windows-11-arm, id: windows-aarch64 }
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ inputs.release_tag || github.ref }}
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: windows-build-${{ matrix.id }}
-          path: build
-      - name: Package
-        if: github.event_name != 'pull_request'
-        shell: pwsh
+          llvm-objdump -p output/agent.exe | grep -Fi 'DLL Name: lua55.dll'
+      - name: Package Windows target
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
         env:
           TARGET_ID: ${{ matrix.id }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $version = (Get-Content deno.json -Raw | ConvertFrom-Json).version
-          $root = "portable-agents-v$version-$env:TARGET_ID"
-          New-Item -ItemType Directory $root
-          Copy-Item build/agent.exe, README.md, LICENSE $root
-          Compress-Archive $root "$root.zip"
-          Expand-Archive "$root.zip" verify-archive
-          $files = Get-ChildItem "verify-archive/$root" -File
-          if ($files.Count -ne 3 -or -not (Test-Path "verify-archive/$root/agent.exe") -or ($files.Name -match 'lua')) { throw 'invalid archive contents' }
+          set -euo pipefail
+          version=$(python3 -c 'import json; print(json.load(open("deno.json"))["version"])')
+          root="portable-agents-v${version}-${TARGET_ID}"
+          mkdir "$root"
+          cp output/agent.exe README.md LICENSE "$root/"
+          python3 - "$root" <<'PYCODE'
+          import pathlib, sys, zipfile
+          root = pathlib.Path(sys.argv[1])
+          path = str(root) + ".zip"
+          with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+              for file in sorted(root.iterdir()):
+                  archive.write(file, file.as_posix())
+          with zipfile.ZipFile(path) as archive:
+              assert set(archive.namelist()) == {f"{root}/{name}" for name in ("agent.exe", "README.md", "LICENSE")}
+              assert archive.testzip() is None
+          PYCODE
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
         with:
@@ -193,13 +188,13 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
-    needs: [build-unix, package-windows]
+    needs: [build-unix, build-windows]
     runs-on: ubuntu-24.04
     permissions: { contents: write }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.release_tag != '' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -257,8 +252,12 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.release_tag != '' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
           persist-credentials: false
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
         with: { deno-version: v2.9.3 }
-      - run: deno publish
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ env.DENO_DIR }}
+          key: deno-2.9.3-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deno.lock') }}
+      - run: deno publish --frozen-lockfile

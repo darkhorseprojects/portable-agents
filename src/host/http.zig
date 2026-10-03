@@ -50,7 +50,6 @@ fn perform(lua: *zlua.Lua) !i32 {
     var request = try client.request(method, uri, .{
         .redirect_behavior = .unhandled,
         .extra_headers = headers orelse &.{},
-        .keep_alive = false,
     });
     defer request.deinit();
     if (method.requestHasBody()) {

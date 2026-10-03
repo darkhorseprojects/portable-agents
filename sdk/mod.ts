@@ -112,7 +112,12 @@ export const make: (options: AgentOptions) => Effect.Effect<Agent, AgentError> =
   Effect.fnUntraced(function* (options: AgentOptions) {
     const executable = options.executable ?? "agent";
     if (
-      !executable ||
+      !executable || executable.includes("\0") ||
+      !options.sourceDir || options.sourceDir.includes("\0") ||
+      !options.entryModule || options.entryModule.includes("\0") ||
+      (options.instructions !== undefined &&
+        (options.instructions <= 0n ||
+          options.instructions > 0xffffffffffffffffn)) ||
       (options.memoryBytes !== undefined &&
         (!Number.isSafeInteger(options.memoryBytes) ||
           options.memoryBytes <= 0))
