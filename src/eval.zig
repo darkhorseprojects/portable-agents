@@ -131,7 +131,8 @@ fn evaluate(template: *runtime.Runtime, selection: []const []const u8, code: []c
         \\local function callable(value,call)
         \\ return setmetatable(value,{__call=call,__metatable=false})
         \\end
-        \\local env={assert=assert,callable=callable,error=error,ipairs=ipairs,next=next,pairs=pairs,
+        \\local env={assert=assert,callable=callable,error=error,getmetatable=getmetatable,
+        \\ ipairs=ipairs,next=next,pairs=pairs,
         \\ rawequal=rawequal,rawget=rawget,rawlen=rawlen,rawset=rawset,select=select,
         \\ tonumber=tonumber,tostring=tostring,type=type,math=math,string=string,table=table,utf8=utf8}
         \\env._G=env
