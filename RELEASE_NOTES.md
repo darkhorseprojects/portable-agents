@@ -1,41 +1,36 @@
 # Portable Agents v0.2.0
 
-Coordinated breaking update for Zinc and Agent Connector. These notes describe
-the source release; publication is a separate step.
-
-- Protocol 2 supports an optional named entry `member`.
-- Terminal errors contain `{code,message,detail}`. There are no separate
-  traceback wire frames.
-- Lua bytecode retains source locations. Compiler and HTTP callback failures
-  retain useful diagnostics.
-- Eval sources are named `eval:1`, `eval:2`, and so on. Ordinary source failures
-  remain result tuples; exhausted instruction quotas abort the call.
-- SDK `call` and `stream` take `{imports,member,profile}` as their third
-  argument.
-- Native `Agent.init` accepts an optional diagnostic sink; `Agent.call` accepts
-  `CallOptions`.
-- Behavior-test fixtures and CI behavior tests have been removed. CI retains
-  formatting, builds, ABI inspection, and archive verification.
-
 ## Requirements
 
-Build with Zig 0.16.x and Lua 5.5 development headers. Runtime binaries require
-an architecture-compatible shared Lua library: `liblua5.5.so.0` on Linux,
-`@rpath/liblua.5.5.dylib` on macOS, or `lua55.dll` on Windows. Archives contain
-`agent`, README, and LICENSE, not Lua. Native package modules must use the same
-Lua ABI.
+Runtime installations need the platform's Lua 5.5 shared library. Native package modules must use the same ABI.
+Builds need Zig 0.16.x and Lua 5.5 development headers.
 
-Protocol 1 callers and the old SDK call signature must be updated together.
-Native calls still return owned output bytes or a Zig error; embedders receive
-diagnostic events through their sink.
+## Update callers
 
-## Publication
+Use protocol version 2. External named-member calls set `member` to a direct entry function name;
+root calls omit it. Input, config, and output remain bytes encoded as padded base64 on the wire.
 
-Publish PA binaries and SDK 0.2.0 before Agent Connector and Zinc. Connector's
-registry lock must be refreshed against the published SDK before its frozen
-registry build. The local coordinated build uses the SDK source directly and
-does not require publication.
+Terminal failures now use `error: {code, message, detail}` in the result frame.
+Read diagnostic detail from that failure, not a separate traceback frame. Keep it private.
 
-Release jobs target Linux x86-64/ARM64, macOS Intel/Apple Silicon, and Windows
-x86-64/ARM64. Verify published downloads against `SHA256SUMS`. Local validation
-does not establish that every target binary has been executed.
+SDK calls use the options object as their third argument:
+
+```ts
+const output = yield* agent.call(input, config, {
+  imports: [],
+  member: "describe",
+  profile: false,
+});
+```
+
+Use a package declaring `describe` for this example. `stream` accepts the same options.
+See [Embedding](https://github.com/darkhorseprojects/portable-agents/wiki/Embedding) for complete programs and wire examples.
+
+Native `Agent.init` accepts an optional diagnostic sink; `Agent.call` accepts `CallOptions`.
+Results are owned output bytes or Zig errors, with diagnostics delivered through the sink.
+
+## Eval failures
+
+Ordinary source failures remain `{ok, value}` tuples. Instruction exhaustion aborts the call with `InstructionLimit`;
+cancellation, allocation, and setup failures also remain call-level failures.
+Source diagnostics identify `eval:1`, `eval:2`, and subsequent inputs.

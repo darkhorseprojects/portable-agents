@@ -49,6 +49,7 @@ fn perform(lua: *zlua.Lua) !i32 {
     const client: *std.http.Client = @ptrCast(@alignCast(@constCast(lua.toPointer(zlua.Lua.upvalueIndex(1)).?)));
     var request = try client.request(method, uri, .{
         .redirect_behavior = .unhandled,
+        .keep_alive = false,
         .extra_headers = headers orelse &.{},
     });
     defer request.deinit();
