@@ -7,6 +7,10 @@ const Root = struct {
     dir: ?std.Io.Dir,
 };
 
+const Lock = struct {
+    file: ?std.Io.File,
+};
+
 pub fn install(lua: *zlua.Lua, package_dir: *const std.Io.Dir) !void {
     try lua.newMetatable("pa.fs.root");
     lua.createTable(0, 2);
@@ -23,6 +27,41 @@ pub fn install(lua: *zlua.Lua, package_dir: *const std.Io.Dir) !void {
     lua.pushLightUserdata(@ptrCast(@constCast(package_dir)));
     lua.pushClosure(zlua.wrap(create), 1);
     lua.setField(-2, "fs");
+    try lua.newMetatable("pa.lock");
+    lua.pushFunction(zlua.wrap(unlock));
+    lua.setField(-2, "__gc");
+    lua.pushFunction(zlua.wrap(unlock));
+    lua.setField(-2, "__close");
+    lua.pop(1);
+    lua.pushFunction(zlua.wrap(lock));
+    lua.setField(-2, "lock");
+}
+
+fn lock(lua: *zlua.Lua) !i32 {
+    const path = try lua.toString(1);
+    if (!std.fs.path.isAbsolute(path)) return error.ExpectedAbsolutePath;
+    const io = lua_state.control(lua).io;
+    const held = lua.newUserdata(Lock, 0);
+    held.* = .{ .file = null };
+    lua.setMetatableRegistry("pa.lock");
+    var dir = try std.Io.Dir.openDirAbsolute(io, std.fs.path.dirname(path).?, .{});
+    defer dir.close(io);
+    const file = try dir.createFile(io, std.fs.path.basename(path), .{
+        .truncate = false,
+        .read = true,
+        .permissions = if (builtin.os.tag == .windows) .default_file else std.Io.File.Permissions.fromMode(0o600),
+    });
+    errdefer file.close(io);
+    if (!try file.tryLock(io, .exclusive)) return error.RunBusy;
+    held.file = file;
+    return 1;
+}
+
+fn unlock(lua: *zlua.Lua) i32 {
+    const held = lua.toUserdata(Lock, 1) catch return 0;
+    if (held.file) |file| file.close(lua_state.control(lua).io);
+    held.file = null;
+    return 0;
 }
 
 fn create(lua: *zlua.Lua) !i32 {
