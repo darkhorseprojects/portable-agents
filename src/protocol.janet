@@ -1,4 +1,4 @@
-(def version 6)
+(def version 1)
 
 (defn record [value required optional]
   (assert (dictionary? value) "InvalidProtocol")

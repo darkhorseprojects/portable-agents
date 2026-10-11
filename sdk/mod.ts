@@ -1,4 +1,4 @@
-/** Opaque-byte programs over Portable Agents protocol 6. @module */
+/** Opaque-byte programs over Portable Agents protocol 1. @module */
 import { Effect, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -33,7 +33,7 @@ export interface Options {
 
 /** Ordered byte and diagnostic events; errors use the stream's failure channel. */
 export type Event =
-  & { readonly version: 6 }
+  & { readonly version: 1 }
   & (
     | { readonly type: "emit" | "append" | "result"; readonly output: Uint8Array }
     | { readonly type: "log"; readonly stage: string }
@@ -92,7 +92,7 @@ export function stream(
 
         const request = encoder.encode(
           JSON.stringify({
-            version: 6,
+            version: 1,
             program: options.program,
             input: input.toBase64(),
             config: config.toBase64(),
@@ -182,7 +182,7 @@ export function stream(
                 ? ["message"]
                 : ["output"];
               if (
-                raw?.version !== 6 || !["emit", "append", "result", "log", "traceback", "error"].includes(raw?.type) ||
+                raw?.version !== 1 || !["emit", "append", "result", "log", "traceback", "error"].includes(raw?.type) ||
                 keys.size !== fields.length + 2 || !keys.has("version") || !keys.has("type") ||
                 fields.some((key) => !keys.has(key) || typeof raw[key] !== "string" || !raw[key].isWellFormed())
               ) throw new Error("Invalid frame fields");

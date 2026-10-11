@@ -5,9 +5,9 @@ uses four Janet modules and has no runtime dependencies, daemon or application d
 
 ## Boundary
 
-Protocol 6 requires explicit frame, nesting, in-flight, handle and admission-time limits. Earlier protocols are
-rejected. Strict decoding checks Unicode, object keys, Base64 and terminal framing. The Janet JSON codec round-trips its
-`:json-null` decoder marker.
+Protocol 1 is the development baseline and requires explicit frame, nesting, in-flight, handle and admission-time
+limits. Other protocol versions are rejected. Strict decoding checks Unicode, object keys, Base64 and terminal framing.
+The Janet JSON codec round-trips its `:json-null` decoder marker.
 
 The controller retains the full grant catalog and private configurations. Programs see only their permitted names.
 Imports have explicit member lists and optional narrower delegation. Named targets retain the invoker's configuration;

@@ -198,7 +198,7 @@ Use Effect's existing `Effect.forkScoped`, Fiber operations, Scope, and deadline
 factory, SDK Spawn wrapper, or custom handle. Process interruption and termination follow the consumer's process layer
 and OS scope; PA supplies no competing lifetime policy.
 
-## Protocol 6
+## Protocol 1
 
 The invoker supplies all boundary bounds before input is parsed:
 
@@ -230,7 +230,7 @@ Stdin contains exactly one LF-terminated JSON object followed by EOF:
 
 ```json
 {
-  "version": 6,
+  "version": 1,
   "program": { "sourceDir": "/snapshots/example", "entryModule": "main.janet" },
   "input": "",
   "config": ""
@@ -238,8 +238,7 @@ Stdin contains exactly one LF-terminated JSON object followed by EOF:
 ```
 
 Optional fields: `imports`, `member`, `spawn`. Wire bytes, including grant configurations, use canonical Base64. Each
-stdout frame has `version: 6` and `type`. Earlier protocol versions are rejected; JSON object key order is not a
-contract.
+stdout frame has `version: 1` and `type`. Other protocol versions are rejected; JSON object key order is not a contract.
 
 | Type                       | Payload                     |
 | -------------------------- | --------------------------- |
