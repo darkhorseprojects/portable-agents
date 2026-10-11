@@ -161,7 +161,7 @@
         (assert (and (> remaining 0) (or (not (or (indexed? x) (dictionary? x))) (< depth depth-limit))) "TransportLimit")
         (-- remaining)
         (cond
-          (nil? x) "null" (boolean? x) (if x "true" "false")
+          (or (nil? x) (= x :json-null)) "null" (boolean? x) (if x "true" "false")
           (number? x) (do (assert (< (math/abs x) math/inf) "InvalidJson") (string/format "%.17g" x))
           (string? x) (do
             (assert (and (<= (length x) remaining) (peg/match utf8 x)) "InvalidJson")

@@ -8,8 +8,7 @@
   },
   "tasks": {
     "check": "deno fmt --check && deno lint && deno check sdk/mod.ts && janet -e '(import ./src/main)'",
-    "format": "deno fmt",
-    "test": "janet test/protocol.janet"
+    "format": "deno fmt"
   },
   "fmt": { "lineWidth": 120 },
   "publish": { "include": ["sdk/mod.ts", "README.md", "LICENSE", "deno.json"] }

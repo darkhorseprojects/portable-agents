@@ -6,7 +6,8 @@ package, CLI, and Effect 4 SDK.
 
 PA owns communication, not application state or execution policy. Programs own durable results and idempotency; the
 invoker owns OS isolation, resources, and termination. PA is not an agent framework, sandbox, job queue, scheduler, or
-database.
+database. Each invocation starts a process; a resident application such as Zinc runs its own evaluator and connects
+through explicit service grants. PA does not retain a REPL or application environment between calls.
 
 ## Install
 
@@ -263,7 +264,8 @@ flooding can still deny admission; this is not a denial-of-service guarantee. Th
 close after admission. PA creates no transport files, socket paths, or persistent listeners.
 
 Internal frames are UTF-8 JSON preceded by eight lowercase hexadecimal length digits and a colon, with no newline. ASCII
-headers and escaped JSON control characters preserve framing through Windows text-mode stdio. The CLI installs a POSIX
+headers and escaped JSON control characters preserve framing through Windows text-mode stdio. The Janet protocol JSON
+decoder represents null as `:json-null`; the encoder accepts that marker and nil as JSON null. The CLI installs a POSIX
 `SIGPIPE` handler so broken pipes become IO errors; Janet library embedders must arrange their own signal handling.
 Closed independent observation pipes do not cancel accepted execution.
 
