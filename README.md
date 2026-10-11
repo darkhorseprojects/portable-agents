@@ -77,6 +77,10 @@ Inside programs:
 - `pa/emit bytes` emits discrete data or streaming chunks; consumers decide their meaning.
 - `pa/log text` emits a UTF-8 stage string without identifier or character-count restrictions.
 
+Application configuration schemas and discovery metadata belong to the program and invoker, not PA. Connector and Zinc's
+CLI resolve their local `program: self` configuration reference before invocation; PA still receives ordinary
+Program/Import descriptors and opaque configuration bytes.
+
 The controller retains grant descriptors and private configurations. Requesting an unknown name cannot manufacture a
 grant. Imported programs execute in separate processes with their grant's configuration and no further grants by
 default. This does not prevent arbitrary Janet from using OS facilities; confinement belongs to the invoker.
