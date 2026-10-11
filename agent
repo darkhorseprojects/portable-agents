@@ -1,0 +1,2 @@
+#!/usr/bin/env janet
+(import portable-agents/src/main :prefix "")

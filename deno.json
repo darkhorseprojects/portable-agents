@@ -3,7 +3,14 @@
   "version": "0.2.0",
   "exports": "./sdk/mod.ts",
   "imports": {
-    "effect": "npm:effect@4.0.0-rc.113",
-    "effect/unstable/process": "npm:effect@4.0.0-rc.113/unstable/process"
-  }
+    "effect": "npm:effect@4.0.2",
+    "effect/process": "npm:effect@4.0.2/process"
+  },
+  "tasks": {
+    "check": "deno fmt --check && deno lint && deno check sdk/mod.ts && janet -e '(import ./src/main)'",
+    "format": "deno fmt",
+    "test": "janet test/protocol.janet"
+  },
+  "fmt": { "lineWidth": 120 },
+  "publish": { "include": ["sdk/mod.ts", "README.md", "LICENSE", "deno.json"] }
 }
