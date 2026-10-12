@@ -36,4 +36,5 @@
             (p/request request)
             (try (p/send stdout (p/frame "ready")) ([err] nil))
             (def result (try (pa/run request (fn [&] nil) true) ([err] (p/diagnostic "error" err))))
-            (try (p/send stdout result) ([err] nil))))))))
+            (try (p/send stdout result) ([err] nil)))))))
+  (os/exit 0))

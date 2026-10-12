@@ -29,6 +29,7 @@ export interface Options {
   readonly cwd?: string;
   readonly environment?: Readonly<Record<string, string>>;
   readonly spawn?: readonly string[];
+  readonly forceKillAfter?: ChildProcess.KillOptions["forceKillAfter"];
 }
 
 /** Ordered byte and diagnostic events; errors use the stream's failure channel. */
@@ -116,7 +117,14 @@ export function stream(
         "call",
         ...[limits.frameBytes, limits.depth, limits.inFlight, limits.handles, limits.admissionSeconds].map(String),
       ],
-      { cwd: options.cwd, env: options.environment, stdin: Stream.make(request), stdout: "pipe", stderr: "inherit" },
+      {
+        cwd: options.cwd,
+        env: options.environment,
+        stdin: Stream.make(request),
+        stdout: "pipe",
+        stderr: "inherit",
+        forceKillAfter: options.forceKillAfter,
+      },
     )).pipe(Effect.mapError((cause) => new AgentError({ code: "ProcessFailure", message: String(cause) })));
 
     const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });

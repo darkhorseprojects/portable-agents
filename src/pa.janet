@@ -160,7 +160,7 @@
       (with-env base
         (module/add-paths ".md" :markdown)
         (module/add-file-extension ".md" :markdown)
-        (def env (require ((request "program") "entryModule")))
+        (def env (require (string (base *syspath*) "/" ((request "program") "entryModule"))))
         (def name (symbol (request "member")))
         (assert (has-key? env name) "UnknownMember")
         (assert (not ((env name) :macro)) "NotCallable")

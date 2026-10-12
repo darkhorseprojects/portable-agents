@@ -36,8 +36,8 @@ transport. Independent raw output uses the OS null device. Static checks do not 
 configuration bytes last, and returns bytes. Strings/buffers are opaque bytes, not necessarily UTF-8. Macros and private
 definitions are not callable exports.
 
-A program descriptor has `sourceDir`, `entryModule`, and optional `dependencies`. PA sets Janet's `syspath` to the
-package root and exposes dependency names as standard `@name` paths:
+A program descriptor has `sourceDir`, `entryModule`, and optional `dependencies`. PA resolves the entry against the
+selected package root, sets Janet's `syspath` to that root, and exposes dependency names as standard `@name` paths:
 
 ```json
 {
@@ -131,9 +131,10 @@ invoker owns signals, process groups/jobs, descendant cleanup, and actual surviv
 lost gets an error on outstanding proxy calls. Death of the executing child, its controller, or its OS scope is not
 recoverable through PA.
 
-Active workers and pending proxy work are not forcibly stopped or joined when a caller returns or fails. The invoker
-owns unfinished work and reaping if its process dies before PA's waiter completes. PA has no daemon, retries, durable
-queue, scheduler, or recoverable task IDs.
+The CLI exits explicitly after terminal protocol work; ignored collectors and failed-admission waiters do not retain it.
+Active workers and pending proxy work are not forcibly stopped or joined. Library embedders own their event-loop
+lifetime. The invoker owns bounded launchers, unfinished work and reaping if its process dies before PA's waiter
+completes. PA has no daemon, retries, durable queue, scheduler, or recoverable task IDs.
 
 ### Durable, idempotent completion
 
@@ -187,8 +188,8 @@ const output = await Effect.runPromise(
 - `stream(options, input, config, imports?)`: typed emit, log, traceback, and terminal result events.
 
 `Options` requires `program` and `limits`; optional settings are `member`, `command`, `cwd`, `environment`, and a
-`spawn` launcher grant. The command defaults to `["agent"]`; from a checkout use
-`["janet", "/absolute/path/to/src/main.janet"]`.
+`spawn` launcher grant, plus `forceKillAfter` passed directly to the process layer for invoker-selected signal
+escalation. The command defaults to `["agent"]`; from a checkout use `["janet", "/absolute/path/to/src/main.janet"]`.
 
 `Program`, `Import`, `Options`, and `Event` describe the boundary; `AgentError` supplies typed `code`/`message`
 failures. Outgoing programs are validated by Janet, not a duplicate SDK schema. Received frames use strict flat
