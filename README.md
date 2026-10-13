@@ -167,13 +167,13 @@ serialization.
 
 ## Effect 4 SDK
 
-The SDK exports two operations, `call` and `stream`. It uses stable Effect 4.0.2 and the consumer's
+The SDK exports two operations, `call` and `stream`. It uses stable Effect 4.0.3 and the consumer's
 `ChildProcessSpawner`; it neither imports a platform layer nor interprets Janet.
 
 ```ts
 import { call, type Options } from "jsr:@darkhorseprojects/portable-agents";
-import { Effect } from "npm:effect@4.0.2";
-import { NodeServices } from "npm:@effect/platform-node@4.0.2";
+import { Effect } from "npm:effect@4.0.3";
+import { NodeServices } from "npm:@effect/platform-node@4.0.3";
 
 const options: Options = {
   program: { sourceDir: "/snapshots/example", entryModule: "main.janet" },

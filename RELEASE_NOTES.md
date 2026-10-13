@@ -26,6 +26,6 @@ durable outcomes before returning.
 Independent events and raw output are not forwarded. Losing observation does not cancel accepted execution. A lost
 admission acknowledgment is ambiguous, and PA does not deduplicate or retry work.
 
-The Effect 4.0.2 SDK exposes `call` and `stream`, using the consumer's process services. The invoker owns OS
+The stable Effect 4.0.3 SDK exposes `call` and `stream`, using the consumer's process services. The invoker owns OS
 confinement, quotas, deadlines, signals, process groups and termination. Loopback authentication is not a same-user
 sandbox; executing children cannot survive the loss of their OS scope merely because they were spawned independently.

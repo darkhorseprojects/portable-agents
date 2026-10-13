@@ -3,8 +3,8 @@
   "version": "0.2.0",
   "exports": "./sdk/mod.ts",
   "imports": {
-    "effect": "npm:effect@4.0.2",
-    "effect/process": "npm:effect@4.0.2/process"
+    "effect": "npm:effect@4.0.3",
+    "effect/process": "npm:effect@4.0.3/process"
   },
   "tasks": {
     "check": "deno fmt --check && deno lint && deno check sdk/mod.ts && janet -e '(import ./src/main)'",

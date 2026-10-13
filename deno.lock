@@ -1,16 +1,16 @@
 {
   "version": "5",
   "specifiers": {
-    "npm:effect@4.0.2": "4.0.2"
+    "npm:effect@4.0.3": "4.0.3"
   },
   "npm": {
-    "effect@4.0.2": {
-      "integrity": "sha512-YeYnLqSFrL4+tCOXRrfNP03w8FILoF/wDl+ukraJAGzXrjcS383W7LAAvGBbLatEyktmLxRq+9xJinx7QzXW5A=="
+    "effect@4.0.3": {
+      "integrity": "sha512-LoWn/Uwwx0JjHSDmBAAahx8sB+klzM6vsZovnbYowBNw6B4QScJLRLBByO61plvNiycx7HPN8FnsWUCu0eXW5w=="
     }
   },
   "workspace": {
     "dependencies": [
-      "npm:effect@4.0.2"
+      "npm:effect@4.0.3"
     ]
   }
 }
