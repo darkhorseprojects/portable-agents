@@ -4,6 +4,7 @@
 
 (defn await [handle]
   (ev/take (handle :done))
+  (ev/chan-close (handle :done))
   (def [ok value] (handle :outcome))
   (if ok value (error value)))
 
@@ -16,9 +17,9 @@
                            ;(map |(string (limits $)) ["frameBytes" "depth" "admissionSeconds"])]
                           :d {:in :pipe :out :pipe :err stderr}))
     (def exited (ev/chan))
-    (ev/spawn (defer (ev/chan-close exited) (os/proc-wait process)))
+    (ev/go (fn [] (os/proc-wait process)) nil exited)
     (def reader (p/reader (process :out)))
-    (def handle @{:done (ev/chan)})
+    (def handle @{:done (ev/chan 1)})
     (var admitted false)
     (defer (unless admitted (ev/close (process :out)))
       (defer (ev/close (process :in))
@@ -27,9 +28,9 @@
         (def ready (p/event (p/receive reader)))
         (assert (= "ready" (ready "type")) (get ready "message" "ProcessFailure")))
       (set admitted true)
-      (ev/spawn
+      (ev/go (fn []
         (with-dyns [:pa/limits limits]
-          (defer (do (ev/close (process :out)) (ev/chan-close (handle :done)))
+          (defer (ev/close (process :out))
             (put handle :outcome
                  (try
                    (do
@@ -40,5 +41,5 @@
                      (assert (= 0 (process :return-code)) "ProcessFailure")
                      (if (= "result" (terminal "type")) [true (p/base64 (terminal "output") true)]
                        [false (terminal "message")]))
-                   ([err] [false err]))))))
+                   ([err] [false err])))))) nil (handle :done))
       handle)))

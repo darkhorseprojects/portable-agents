@@ -137,15 +137,4 @@ Exactly one result/error, EOF and successful process exit are required. Terminal
 UTF-8, fields, Base64 and duplicate/trailing terminals are checked. Janet also rejects duplicate JSON keys. There is no
 second socket or length-header protocol.
 
-## Verification
-
-```sh
-python3 tests/runtime.py
-deno test --allow-read --allow-write --allow-env --allow-run tests/
-```
-
-The native lifecycle probe covers opaque bytes, output separation, repeated awaits, malformed input and execution after
-observer death. CI runs it on Linux, macOS and Windows. SDK observation-release tests run with PA; Connector checks the
-application boundary.
-
 Further contracts: [wiki](https://github.com/darkhorseprojects/portable-agents/wiki).
