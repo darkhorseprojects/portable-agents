@@ -3,12 +3,12 @@
   "version": "0.2.0",
   "exports": "./sdk/mod.ts",
   "imports": {
-    "effect": "npm:effect@4.0.3",
-    "effect/process": "npm:effect@4.0.3/process"
+    "effect": "npm:effect@4.0.3"
   },
   "tasks": {
-    "check": "deno fmt --check && deno lint && deno check sdk/mod.ts && janet -e '(import ./src/main)'",
-    "format": "deno fmt"
+    "check": "deno fmt --check && deno lint && deno check sdk/mod.ts src/launch.ts tools/compile.ts && janet -e '(import ./src/main)'",
+    "format": "deno fmt",
+    "compile": "deno run --allow-read --allow-write --allow-run tools/compile.ts"
   },
   "fmt": { "lineWidth": 120 },
   "publish": { "include": ["sdk/mod.ts", "README.md", "LICENSE", "deno.json"] }

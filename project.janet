@@ -6,4 +6,3 @@
   :dependencies [])
 
 (declare-source :source ["src"] :prefix "portable-agents")
-(declare-binscript :main "agent")

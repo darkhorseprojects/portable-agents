@@ -7,8 +7,8 @@
   value)
 
 (defn limits [value]
-  (record value ["frameBytes" "depth" "inFlight" "handles" "admissionSeconds"] [])
-  (each key ["frameBytes" "depth" "inFlight" "handles"]
+  (record value ["frameBytes" "depth" "admissionSeconds"] [])
+  (each key ["frameBytes" "depth"]
     (def n (value key))
     (assert (and (int? n) (<= 1 n 0x7fffffff)) "InvalidLimits"))
   (assert (and (>= (value "depth") 2) (number? (value "admissionSeconds"))
@@ -16,11 +16,11 @@
   value)
 
 (defn- program [value]
-  (record value ["sourceDir" "entryModule"] ["dependencies" "command"])
+  (record value ["sourceDir" "entryModule" "entry"] ["dependencies" "command"])
   (when (has-key? value "command")
     (assert (and (indexed? (value "command")) (> (length (value "command")) 0)
       (every? (map |(and (string? $) (not= "" $) (not (string/find "\0" $))) (value "command")))) "InvalidProgram"))
-  (each k ["sourceDir" "entryModule"]
+  (each k ["sourceDir" "entryModule" "entry"]
     (assert (and (string? (value k)) (> (length (value k)) 0) (not (string/find "\0" (value k)))) "InvalidProgram"))
   (def dependencies (get value "dependencies" {}))
   (assert (dictionary? dependencies) "InvalidProgram")
@@ -61,37 +61,11 @@
       (string out))))
 
 (defn request [value]
-  (record value ["version" "program" "input" "config"] ["imports" "visible" "member" "spawn"])
-  (assert (= version (value "version")) "InvalidProtocol")
+  (record value ["version" "program" "input" "config" "observe"] [])
+  (assert (and (= version (value "version")) (boolean? (value "observe"))) "InvalidProtocol")
   (program (value "program"))
   (base64 (value "input") :check)
   (base64 (value "config") :check)
-  (def launcher (get value "spawn" []))
-  (assert (and (indexed? launcher) (every? (map |(and (string? $) (not= "" $) (not (string/find "\0" $))) launcher))) "InvalidSpawnGrant")
-  (def member (get value "member" "call"))
-  (assert (and (string? member) (not= "" member) (not (string/find "\0" member))) "InvalidMember")
-
-  (def names @{})
-  (assert (indexed? (get value "imports" [])) "InvalidProtocol")
-  (each grant (get value "imports" [])
-    (record grant ["name" "program" "config" "members"] ["imports" "spawn"])
-    (assert (and (indexed? (grant "members")) (> (length (grant "members")) 0)
-      (every? (map |(and (string? $) (not= "" $)) (grant "members")))) "InvalidImport")
-    (assert (and (indexed? (get grant "imports" []))
-      (boolean? (get grant "spawn" false))) "InvalidImport")
-    (def name (grant "name"))
-    (assert (and (string? name) (not= "" name) (not= "self" name) (not (string/find "\0" name)) (not (in names name))) "InvalidImport")
-    (put names name true)
-    (program (grant "program"))
-    (base64 (grant "config") :check))
-
-  (each grant (get value "imports" [])
-    (each name (get grant "imports" [])
-      (assert (has-key? names name) "InvalidImport")))
-  (when (has-key? value "visible")
-    (assert (indexed? (value "visible")) "InvalidImport")
-    (each name (value "visible") (assert (has-key? names name) "ImportNotGranted")))
-
   value)
 
 (def- utf8-unit ~(choice (range "\x00\x7f")
@@ -178,47 +152,44 @@
 
 (defn frame [type & pairs] (table "version" version "type" type ;pairs))
 
-(defn event [value &opt rpc]
-  (def fields (get (if rpc {"reply" ["id" "output"] "error" ["id" "code" "message"]}
-    {"emit" ["output"] "append" ["output"] "result" ["output"] "log" ["stage"] "traceback" ["message"] "error" ["code" "message"]}) (get value "type")))
+(defn event [value]
+  (def fields (get {"ready" [] "emit" ["output"] "append" ["output"] "result" ["output"] "log" ["stage"] "traceback" ["message"] "error" ["code" "message"]} (get value "type")))
   (assert fields "InvalidProtocol")
   (record value (array/concat @["version" "type"] fields) [])
   (assert (= version (value "version")) "InvalidProtocol")
   (each key fields (assert (string? (value key)) "InvalidProtocol"))
-  (when (and (not rpc) (has-key? value "output")) (base64 (value "output") :check))
+  (when (has-key? value "output") (base64 (value "output") :check))
   value)
 
-(def- header-shape (peg/compile ~(* (repeat 8 (set "0123456789abcdef")) ":" -1)))
-
-(defn send [io value &opt ndjson]
-  (def bytes (json (if ndjson (event value) value)))
-  (assert (<= (+ (length bytes) (if ndjson 2 9)) ((dyn :pa/limits) "frameBytes")) "TransportLimit")
-  # ASCII headers and escaped control bytes survive Windows text-mode stdio.
-  (:write io (if ndjson (string bytes "\n") (string (string/format "%08x:" (length bytes)) bytes)))
+(defn send [io value]
+  (def bytes (string (json value) "\n"))
+  (assert (<= (+ 1 (length bytes)) ((dyn :pa/limits) "frameBytes")) "TransportLimit")
+  (:write io bytes)
   (when (get io :flush) (:flush io)))
 
-(defn receive [io &opt ndjson]
-  (def reader (if (get io :chunk) :chunk :read))
+(defn reader [io] @{:io io :bytes @""})
+
+(defn receive [state]
   (def bound ((dyn :pa/limits) "frameBytes"))
-  (def header (reader io (if ndjson bound 9)))
-  (if ndjson
-    (do
-      (assert (and header (= 10 (last header)) (= (- (length header) 1) (string/find "\n" header))
-                   (not (reader io 1))) "InvalidProtocol")
-      (json header true))
-    (when header
-      (assert (peg/match header-shape header) "InvalidProtocol")
-      (def n (scan-number (string/slice header 0 8) 16))
-      (assert (<= 1 n (- bound 9)) "TransportLimit")
-      (def bytes (reader io n))
-      (assert (and bytes (= n (length bytes))) "InvalidProtocol")
-      (json bytes true))))
+  (var line (string/find "\n" (state :bytes)))
+  (while (nil? line)
+    (assert (< (length (state :bytes)) bound) "TransportLimit")
+    (def chunk (:read (state :io) (min 4096 (- bound (length (state :bytes))))))
+    (unless chunk
+      (assert (= 0 (length (state :bytes))) "InvalidProtocol")
+      (break))
+    (buffer/push-string (state :bytes) chunk)
+    (set line (string/find "\n" (state :bytes))))
+  (when line
+    (def bytes (string/slice (state :bytes) 0 line))
+    (put state :bytes (buffer (string/slice (state :bytes) (+ line 1))))
+    (json bytes true)))
 
 (defn diagnostic [type err & fields]
   (def result (frame type "message" "" ;fields))
   (when (and (= type "error") (not (has-key? result "code")))
     (put result "code" (if (= err "ResourceLimit") err "ProgramError")))
-  (var budget (- ((dyn :pa/limits) "frameBytes") 9 (length (json result))))
+  (var budget (- ((dyn :pa/limits) "frameBytes") 2 (length (json result))))
   (def out @"")
   (each c (if (string? err) err "Program failed")
     (def cost (case c 34 2 92 2 (if (< c 32) 6 1)))

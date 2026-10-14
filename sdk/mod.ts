@@ -1,35 +1,24 @@
 /** Opaque-byte programs over Portable Agents protocol 1. @module */
 import { Effect, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { spawn as spawnProcess } from "node:child_process";
+import process from "node:process";
 
 /** A selected package and its explicit @name dependency roots. */
 export interface Program {
   readonly sourceDir: string;
   readonly entryModule: string;
+  readonly entry: string;
   readonly dependencies?: Readonly<Record<string, string>>;
   readonly command?: readonly string[];
-}
-
-/** A named proxy grant with invoker-owned configuration. */
-export interface Import {
-  readonly name: string;
-  readonly program: Program;
-  readonly config: Uint8Array;
-  readonly members: readonly string[];
-  readonly imports?: readonly string[];
-  readonly spawn?: boolean;
 }
 
 /** Invocation, process settings, and mandatory invoker-selected boundary bounds. */
 export interface Options {
   readonly program: Program;
-  readonly limits: Readonly<Record<"frameBytes" | "depth" | "inFlight" | "handles" | "admissionSeconds", number>>;
-  readonly member?: string;
+  readonly limits: Readonly<Record<"frameBytes" | "depth" | "admissionSeconds", number>>;
   readonly command?: readonly string[];
   readonly cwd?: string;
   readonly environment?: Readonly<Record<string, string>>;
-  readonly spawn?: readonly string[];
-  readonly forceKillAfter?: ChildProcess.KillOptions["forceKillAfter"];
 }
 
 /** Ordered byte and diagnostic events; errors use the stream's failure channel. */
@@ -55,41 +44,22 @@ export class AgentError extends Error {
 const encoder = new TextEncoder();
 const base64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=|[A-Za-z0-9+/][AQgw]==)?(?![\s\S])/;
 
-/** Collect the terminal bytes from an invocation. */
-export function call(
+/** Spawn an execution; publish terminal output only after successful exit. */
+export function spawn(
   options: Options,
   input: Uint8Array,
   config: Uint8Array,
-  imports: readonly Import[] = [],
-): Effect.Effect<Uint8Array, AgentError, ChildProcessSpawner.ChildProcessSpawner> {
-  return Stream.runFold(
-    stream(options, input, config, imports),
-    (): Uint8Array => new Uint8Array(),
-    (output, event) => event.type === "result" ? event.output : output,
-  );
-}
-
-/** Invoke through the consumer's process service; publish terminal output only after successful exit. */
-export function stream(
-  options: Options,
-  input: Uint8Array,
-  config: Uint8Array,
-  imports: readonly Import[] = [],
-): Stream.Stream<Event, AgentError, ChildProcessSpawner.ChildProcessSpawner> {
+): Stream.Stream<Event, AgentError> {
   return Stream.unwrap(Effect.gen(function* () {
     const { request, limits } = yield* Effect.try({
       try: () => {
         const limits = { ...options.limits };
         if (
-          Object.keys(limits).length !== 5 || limits.depth < 2 ||
+          Object.keys(limits).length !== 3 || limits.depth < 2 ||
           !Number.isFinite(limits.admissionSeconds) || limits.admissionSeconds <= 0 ||
-          [limits.frameBytes, limits.depth, limits.inFlight, limits.handles].some((n) =>
-            !Number.isInteger(n) || n <= 0 || n > 0x7fffffff
-          )
+          [limits.frameBytes, limits.depth].some((n) => !Number.isInteger(n) || n <= 0 || n > 0x7fffffff)
         ) throw new Error("Invalid boundary limits");
-        let bytes = input.length + config.length;
-        for (const grant of imports) bytes += grant.config.length;
-        if (bytes * 4 / 3 > limits.frameBytes) throw new Error("Request exceeds bound");
+        if ((input.length + config.length) * 4 / 3 > limits.frameBytes) throw new Error("Request exceeds bound");
 
         const request = encoder.encode(
           JSON.stringify({
@@ -97,9 +67,7 @@ export function stream(
             program: options.program,
             input: input.toBase64(),
             config: config.toBase64(),
-            member: options.member,
-            imports: imports.map((grant) => ({ ...grant, config: grant.config.toBase64() })),
-            spawn: options.spawn,
+            observe: true,
           }) + "\n",
         );
         if (request.length > limits.frameBytes) throw new Error("Request exceeds bound");
@@ -108,32 +76,49 @@ export function stream(
       catch: (cause) => new AgentError({ code: "InvalidProtocol", message: String(cause) }),
     });
 
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const [command, ...args] = options.command ?? ["agent"];
-    const child = yield* spawner.spawn(ChildProcess.make(
-      command,
-      [
-        ...args,
-        "call",
-        ...[limits.frameBytes, limits.depth, limits.inFlight, limits.handles, limits.admissionSeconds].map(String),
-      ],
-      {
-        cwd: options.cwd,
-        env: options.environment,
-        stdin: Stream.make(request),
-        stdout: "pipe",
-        stderr: "inherit",
-        forceKillAfter: options.forceKillAfter,
-      },
-    )).pipe(Effect.mapError((cause) => new AgentError({ code: "ProcessFailure", message: String(cause) })));
+    const child = yield* Effect.acquireRelease(
+      Effect.try({
+        try: () =>
+          spawnProcess(command, [
+            ...args,
+            "spawn",
+            ...[limits.frameBytes, limits.depth, limits.admissionSeconds].map(String),
+          ], {
+            cwd: options.cwd,
+            env: { ...process.env, ...options.environment },
+            detached: true,
+            shell: false,
+            stdio: ["pipe", "pipe", "inherit"],
+          }),
+        catch: (cause) => new AgentError({ code: "ProcessFailure", message: String(cause) }),
+      }),
+      (child) =>
+        Effect.sync(() => {
+          child.unref();
+          child.stdin!.destroy();
+          child.stdout!.destroy();
+        }),
+    );
+    const exited = Promise.withResolvers<number | AgentError>();
+    child.once("error", (cause) => exited.resolve(new AgentError({ code: "ProcessFailure", message: String(cause) })));
+    child.once("close", (code) => exited.resolve(code ?? -1));
+    child.stdin!.on(
+      "error",
+      (cause) => exited.resolve(new AgentError({ code: "ProcessFailure", message: String(cause) })),
+    );
+    child.stdin!.end(request);
 
     const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
     const pending = new Uint8Array(new ArrayBuffer(0, { maxByteLength: limits.frameBytes - 1 }));
     let used = 0;
     let terminal: Event | AgentError | undefined;
+    let admitted = false;
 
-    const events = child.stdout.pipe(
-      Stream.mapError((cause) => new AgentError({ code: "ProcessFailure", message: String(cause) })),
+    const events = Stream.fromAsyncIterable(
+      child.stdout!,
+      (cause) => new AgentError({ code: "ProcessFailure", message: String(cause) }),
+    ).pipe(
       Stream.mapEffect((chunk) =>
         Effect.try({
           try: () => {
@@ -182,7 +167,9 @@ export function stream(
                 else if (line[i] === "[" || line[i] === "]") throw new Error("Nonflat frame");
               }
               const raw = JSON.parse(line);
-              const fields = raw?.type === "error"
+              const fields = raw?.type === "ready"
+                ? []
+                : raw?.type === "error"
                 ? ["code", "message"]
                 : raw?.type === "log"
                 ? ["stage"]
@@ -190,10 +177,17 @@ export function stream(
                 ? ["message"]
                 : ["output"];
               if (
-                raw?.version !== 1 || !["emit", "append", "result", "log", "traceback", "error"].includes(raw?.type) ||
+                raw?.version !== 1 ||
+                !["ready", "emit", "append", "result", "log", "traceback", "error"].includes(raw?.type) ||
                 keys.size !== fields.length + 2 || !keys.has("version") || !keys.has("type") ||
                 fields.some((key) => !keys.has(key) || typeof raw[key] !== "string" || !raw[key].isWellFormed())
               ) throw new Error("Invalid frame fields");
+              if (raw.type === "ready") {
+                if (admitted) throw new Error("Duplicate admission");
+                admitted = true;
+                continue;
+              }
+              if (!admitted && !["traceback", "error"].includes(raw.type)) throw new Error("Missing admission");
               if ("output" in raw) {
                 if (!base64.test(raw.output)) throw new Error("Noncanonical Base64");
                 raw.output = Uint8Array.fromBase64(raw.output);
@@ -214,9 +208,8 @@ export function stream(
       if (used || !terminal) {
         return yield* Effect.fail(new AgentError({ code: "InvalidProtocol", message: "Missing or partial terminal" }));
       }
-      const code = yield* child.exitCode.pipe(
-        Effect.mapError((cause) => new AgentError({ code: "ProcessFailure", message: String(cause) })),
-      );
+      const code = yield* Effect.promise(() => exited.promise);
+      if (code instanceof AgentError) return yield* Effect.fail(code);
       if (code !== 0) {
         return yield* Effect.fail(new AgentError({ code: "ProcessFailure", message: `agent exited ${code}` }));
       }

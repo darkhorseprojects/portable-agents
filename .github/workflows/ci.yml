@@ -47,4 +47,7 @@ jobs:
           "$destination\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
       - run: janet -v
       - run: deno task check
+      - run: deno task compile
+      - run: python tests/runtime.py
+      - run: deno test --allow-read --allow-write --allow-env --allow-run tests/
       - run: deno publish --dry-run
