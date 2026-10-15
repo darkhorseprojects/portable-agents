@@ -26,7 +26,7 @@ export interface Options {
 export type Event =
   & { readonly version: 1 }
   & (
-    | { readonly type: "emit" | "append" | "result"; readonly output: Uint8Array }
+    | { readonly type: "emit" | "result"; readonly output: Uint8Array }
     | { readonly type: "log"; readonly stage: string }
     | { readonly type: "traceback"; readonly message: string }
   );
@@ -68,7 +68,6 @@ export function spawn(
             program: options.program,
             input: input.toBase64(),
             config: config.toBase64(),
-            observe: true,
           }) + "\n",
         );
         if (request.length > limits.frameBytes) throw new Error("Request exceeds bound");
@@ -179,7 +178,7 @@ export function spawn(
                 : ["output"];
               if (
                 raw?.version !== 1 ||
-                !["ready", "emit", "append", "result", "log", "traceback", "error"].includes(raw?.type) ||
+                !["ready", "emit", "result", "log", "traceback", "error"].includes(raw?.type) ||
                 keys.size !== fields.length + 2 || !keys.has("version") || !keys.has("type") ||
                 fields.some((key) => !keys.has(key) || typeof raw[key] !== "string" || !raw[key].isWellFormed())
               ) throw new Error("Invalid frame fields");

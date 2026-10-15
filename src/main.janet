@@ -9,13 +9,11 @@
   (when observing
     (try (do (file/write stdout bytes) (file/flush stdout)) ([err] (set observing false)))))
 
-(defn- emit [bytes &opt mode]
-  (assert (index-of mode [nil :append]) "InvalidEmitMode")
-  (when (dyn :pa/observe)
-    (publish (p/frame (if mode "append" "emit") "output" (p/base64 bytes)))))
+(defn- emit [bytes]
+  (publish (p/frame "emit" "output" (p/base64 bytes))))
 
 (defn- log [stage]
-  (when (dyn :pa/observe) (publish (p/frame "log" "stage" stage))))
+  (publish (p/frame "log" "stage" stage)))
 
 (defn- module-env [] (make-env (dyn :pa/environment)))
 
@@ -23,16 +21,13 @@
   (def limits (p/limits (table ;(interleave ["frameBytes" "depth" "admissionSeconds"] (map scan-number args)))))
   (unless (index-of (os/which) [:windows :mingw]) (os/sigaction :pipe (fn [])))
   (with-dyns [:pa/limits limits]
-    (var diagnostics true)
     (try
       (do
         (def reader (p/reader stdin))
         (def request (p/request (p/receive reader)))
-        (set diagnostics (request "observe"))
         (assert (not (p/receive reader)) "InvalidProtocol")
         (def base (make-env))
         (put base :pa/limits limits)
-        (put base :pa/observe (request "observe"))
         (put base :pa/program (request "program"))
         (put base :pa/environment base)
         (put base *syspath* (os/realpath ((request "program") "sourceDir")))
@@ -61,6 +56,6 @@
         (with-dyns [:err (fn [bytes]
           (buffer/push-string trace (string/slice bytes 0 (min (length bytes) (- (limits "frameBytes") (length trace))))))]
           (debug/stacktrace fiber))
-        (when diagnostics (publish (p/diagnostic "traceback" (string trace))))
+        (publish (p/diagnostic "traceback" (string trace)))
         (publish (p/diagnostic "error" err)))))
   (os/exit 0))

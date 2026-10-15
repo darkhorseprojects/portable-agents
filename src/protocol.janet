@@ -61,8 +61,8 @@
       (string out))))
 
 (defn request [value]
-  (record value ["version" "program" "input" "config" "observe"] [])
-  (assert (and (= version (value "version")) (boolean? (value "observe"))) "InvalidProtocol")
+  (record value ["version" "program" "input" "config"] [])
+  (assert (= version (value "version")) "InvalidProtocol")
   (program (value "program"))
   (base64 (value "input") :check)
   (base64 (value "config") :check)
@@ -153,7 +153,7 @@
 (defn frame [type & pairs] (table "version" version "type" type ;pairs))
 
 (defn event [value]
-  (def fields (get {"ready" [] "emit" ["output"] "append" ["output"] "result" ["output"] "log" ["stage"] "traceback" ["message"] "error" ["code" "message"]} (get value "type")))
+  (def fields (get {"ready" [] "emit" ["output"] "result" ["output"] "log" ["stage"] "traceback" ["message"] "error" ["code" "message"]} (get value "type")))
   (assert fields "InvalidProtocol")
   (record value (array/concat @["version" "type"] fields) [])
   (assert (= version (value "version")) "InvalidProtocol")

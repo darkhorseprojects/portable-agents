@@ -12,7 +12,7 @@
   (def limits (p/limits (options :limits)))
   (with-dyns [:pa/limits limits]
     (def request (p/request {"version" p/version "program" program "input" (p/base64 input)
-                            "config" (p/base64 config) "observe" false}))
+                            "config" (p/base64 config)}))
     (def process (os/spawn [(os/getenv "PA_EXECUTABLE") "spawn"
                            ;(map |(string (limits $)) ["frameBytes" "depth" "admissionSeconds"])]
                           :d {:in :pipe :out :pipe :err stderr}))
@@ -25,7 +25,8 @@
       (defer (ev/close (process :in))
         (p/send (process :in) request))
       (ev/with-deadline (limits "admissionSeconds")
-        (def ready (p/event (p/receive reader)))
+        (var ready (p/event (p/receive reader)))
+        (while (= "traceback" (ready "type")) (set ready (p/event (p/receive reader))))
         (assert (= "ready" (ready "type")) (get ready "message" "ProcessFailure")))
       (set admitted true)
       (ev/go (fn []
@@ -34,9 +35,14 @@
             (put handle :outcome
                  (try
                    (do
-                     (def terminal (p/event (p/receive reader)))
-                     (assert (and (index-of (terminal "type") ["result" "error"])
-                                  (not (p/receive reader))) "InvalidProtocol")
+                     (var terminal nil)
+                     (var frame nil)
+                     (while (set frame (p/receive reader))
+                       (assert (not terminal) "InvalidProtocol")
+                       (def event (p/event frame))
+                       (assert (not= "ready" (event "type")) "InvalidProtocol")
+                       (when (index-of (event "type") ["result" "error"]) (set terminal event)))
+                     (assert terminal "InvalidProtocol")
                      (ev/take exited)
                      (assert (= 0 (process :return-code)) "ProcessFailure")
                      (if (= "result" (terminal "type")) [true (p/base64 (terminal "output") true)]

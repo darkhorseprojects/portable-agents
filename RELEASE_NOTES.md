@@ -1,3 +1,10 @@
+# Complete segments only
+
+The request observation switch and append frame/mode are removed. Programs emit complete application segments. Janet
+spawn drains intermediate frames immediately without accumulating them; ignoring a handle does not stop collection.
+Closed observation pipes still do not cancel accepted execution. Install matching binaries and sources together; old
+request flags and append frames are rejected rather than adapted.
+
 # Silent observation cancellation
 
 SDK stdout uses a cancellable readable-stream adapter instead of awaiting an async iterator's return behind a pending

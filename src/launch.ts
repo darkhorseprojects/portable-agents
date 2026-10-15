@@ -39,7 +39,7 @@ const child = spawn(command[0], [
 ], {
   detached: true,
   shell: false,
-  stdio: ["pipe", "pipe", request.observe ? "inherit" : "ignore"],
+  stdio: ["pipe", "pipe", "inherit"],
   env: { ...Deno.env.toObject(), PA_EXECUTABLE: Deno.execPath() },
 });
 const status = Promise.withResolvers<number>();

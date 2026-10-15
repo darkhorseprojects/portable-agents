@@ -65,9 +65,10 @@ const output = await Effect.runPromise(Stream.runCollect(spawn(
 )));
 ```
 
-`spawn` is an Effect stream: consuming it starts execution. Events are emit/append bytes, stage logs, tracebacks and a
-terminal result. `AgentError` supplies typed failures. Use Effect's existing stream/fiber operators to collect results
-or stop observation. There are no platform-service layers, factories or second `call`/`stream` APIs.
+`spawn` is an Effect stream: consuming it starts execution. Events are complete emitted segments, stage logs, tracebacks
+and a terminal result. `pa/emit` takes one byte value; there is no append mode or observation switch. `AgentError`
+supplies typed failures. Use Effect's existing stream/fiber operators to collect results or stop observation. There are
+no platform-service layers, factories or second `call`/`stream` APIs.
 
 Optional settings are the agent executable command, working directory and environment. This host SDK uses standard Node
 process APIs and runs in Node-compatible hosts including Deno.
@@ -100,8 +101,8 @@ observer -> agent bootstrap -> detached Janet execution
 
 Executions have their own process group. SDK scope release closes pipes and unreferences its bootstrap; it does not kill
 a process tree. Cancelling observation cancels its stdout reader without waiting for another program frame. Workers
-tolerate broken observation pipes. Quiet Janet spawns suppress running events, so an ignored observer cannot
-backpressure their application commit.
+tolerate broken observation pipes. Janet spawns continuously drain intermediate frames without retaining them, even when
+the caller does not await the handle. Programs emit complete segments rather than transport fragments.
 
 Programs must commit before returning. An acknowledgment can be lost after acceptance; lost observation is not proof
 that no work ran. Application operation keys and idempotency belong to the application.
@@ -123,8 +124,7 @@ Stdin is one LF-terminated JSON request followed by EOF:
   "version": 1,
   "program": { "sourceDir": "/runtime/example", "entryModule": "main.janet", "entry": "answer" },
   "input": "",
-  "config": "",
-  "observe": true
+  "config": ""
 }
 ```
 
@@ -132,8 +132,8 @@ Byte fields use canonical Base64. Bounds are explicit: complete frame bytes, JSO
 acceptance time. Output reserves CRLF room. Capacity bounds do not limit application computation.
 
 Stdout uses the same NDJSON framing. A `ready` record acknowledges acceptance and is consumed internally by SDKs. Other
-records contain `output` (emit/append/result), `stage` (log), `message` (traceback), or `code`/`message` (error).
-Exactly one result/error, EOF and successful process exit are required. Terminal bytes are withheld until validated.
+records contain `output` (emit/result), `stage` (log), `message` (traceback), or `code`/`message` (error). Exactly one
+result/error, EOF and successful process exit are required. Terminal bytes are withheld until validated.
 
 UTF-8, fields, Base64 and duplicate/trailing terminals are checked. Janet also rejects duplicate JSON keys. There is no
 second socket or length-header protocol.
