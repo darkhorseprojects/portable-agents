@@ -99,8 +99,9 @@ observer -> agent bootstrap -> detached Janet execution
 ```
 
 Executions have their own process group. SDK scope release closes pipes and unreferences its bootstrap; it does not kill
-a process tree. Workers tolerate broken observation pipes. Quiet Janet spawns suppress running events, so an ignored
-observer cannot backpressure their application commit.
+a process tree. Cancelling observation cancels its stdout reader without waiting for another program frame. Workers
+tolerate broken observation pipes. Quiet Janet spawns suppress running events, so an ignored observer cannot
+backpressure their application commit.
 
 Programs must commit before returning. An acknowledgment can be lost after acceptance; lost observation is not proof
 that no work ran. Application operation keys and idempotency belong to the application.

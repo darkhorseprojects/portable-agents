@@ -2,6 +2,7 @@
 import { Effect, Stream } from "effect";
 import { spawn as spawnProcess } from "node:child_process";
 import process from "node:process";
+import { Readable } from "node:stream";
 
 /** A selected package and its explicit @name dependency roots. */
 export interface Program {
@@ -115,10 +116,10 @@ export function spawn(
     let terminal: Event | AgentError | undefined;
     let admitted = false;
 
-    const events = Stream.fromAsyncIterable(
-      child.stdout!,
-      (cause) => new AgentError({ code: "ProcessFailure", message: String(cause) }),
-    ).pipe(
+    const events = Stream.fromReadableStream({
+      evaluate: () => Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>,
+      onError: (cause) => new AgentError({ code: "ProcessFailure", message: String(cause) }),
+    }).pipe(
       Stream.mapEffect((chunk) =>
         Effect.try({
           try: () => {

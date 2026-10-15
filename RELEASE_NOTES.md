@@ -1,3 +1,8 @@
+# Silent observation cancellation
+
+SDK stdout uses a cancellable readable-stream adapter instead of awaiting an async iterator's return behind a pending
+read. Observer release does not wait for a silent execution to produce output and does not kill accepted execution.
+
 # Development baseline
 
 PA now has one spawn boundary and one NDJSON transport. TCP workers, nonce admission, RPC registries, program-shaped
