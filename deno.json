@@ -6,9 +6,9 @@
     "effect": "npm:effect@4.0.3"
   },
   "tasks": {
-    "check": "deno fmt --check && deno lint && deno check sdk/mod.ts src/launch.ts tools/compile.ts && janet -e '(import ./src/main)'",
+    "check": "deno fmt --check && deno lint && deno check --frozen sdk/mod.ts && jpm build",
     "format": "deno fmt",
-    "compile": "deno run --allow-read --allow-write --allow-run tools/compile.ts"
+    "compile": "jpm build"
   },
   "fmt": { "lineWidth": 120 },
   "publish": { "include": ["sdk/mod.ts", "README.md", "LICENSE", "deno.json"] }

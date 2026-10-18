@@ -82,7 +82,7 @@ export function spawn(
         try: () =>
           spawnProcess(command, [
             ...args,
-            "spawn",
+            "execute",
             ...[limits.frameBytes, limits.depth, limits.admissionSeconds].map(String),
           ], {
             cwd: options.cwd,
@@ -99,6 +99,16 @@ export function spawn(
           child.stdin!.destroy();
           child.stdout!.destroy();
         }),
+    );
+    const admission = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        setTimeout(() => {
+          child.stdout!.destroy(
+            new AgentError({ code: "AdmissionTimeout", message: "Execution may have accepted the request" }),
+          );
+        }, limits.admissionSeconds * 1000)
+      ),
+      (timer) => Effect.sync(() => clearTimeout(timer)),
     );
     const exited = Promise.withResolvers<number | AgentError>();
     child.once("error", (cause) => exited.resolve(new AgentError({ code: "ProcessFailure", message: String(cause) })));
@@ -117,7 +127,8 @@ export function spawn(
 
     const events = Stream.fromReadableStream({
       evaluate: () => Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>,
-      onError: (cause) => new AgentError({ code: "ProcessFailure", message: String(cause) }),
+      onError: (cause) =>
+        cause instanceof AgentError ? cause : new AgentError({ code: "ProcessFailure", message: String(cause) }),
     }).pipe(
       Stream.mapEffect((chunk) =>
         Effect.try({
@@ -185,9 +196,10 @@ export function spawn(
               if (raw.type === "ready") {
                 if (admitted) throw new Error("Duplicate admission");
                 admitted = true;
+                clearTimeout(admission);
                 continue;
               }
-              if (!admitted && !["traceback", "error"].includes(raw.type)) throw new Error("Missing admission");
+              if (!admitted && !["log", "traceback", "error"].includes(raw.type)) throw new Error("Missing admission");
               if ("output" in raw) {
                 if (!base64.test(raw.output)) throw new Error("Noncanonical Base64");
                 raw.output = Uint8Array.fromBase64(raw.output);

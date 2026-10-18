@@ -13,7 +13,7 @@
   (with-dyns [:pa/limits limits]
     (def request (p/request {"version" p/version "program" program "input" (p/base64 input)
                             "config" (p/base64 config)}))
-    (def process (os/spawn [(os/getenv "PA_EXECUTABLE") "spawn"
+    (def process (os/spawn [(dyn :pa/executable) "execute"
                            ;(map |(string (limits $)) ["frameBytes" "depth" "admissionSeconds"])]
                           :d {:in :pipe :out :pipe :err stderr}))
     (def exited (ev/chan))
@@ -26,7 +26,7 @@
         (p/send (process :in) request))
       (ev/with-deadline (limits "admissionSeconds")
         (var ready (p/event (p/receive reader)))
-        (while (= "traceback" (ready "type")) (set ready (p/event (p/receive reader))))
+        (while (index-of (ready "type") ["traceback" "log"]) (set ready (p/event (p/receive reader))))
         (assert (= "ready" (ready "type")) (get ready "message" "ProcessFailure")))
       (set admitted true)
       (ev/go (fn []
@@ -41,6 +41,8 @@
                        (assert (not terminal) "InvalidProtocol")
                        (def event (p/event frame))
                        (assert (not= "ready" (event "type")) "InvalidProtocol")
+                       (when (and (= "emit" (event "type")) (options :emit))
+                         ((options :emit) (p/base64 (event "output") true)))
                        (when (index-of (event "type") ["result" "error"]) (set terminal event)))
                      (assert terminal "InvalidProtocol")
                      (ev/take exited)

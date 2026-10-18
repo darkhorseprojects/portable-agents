@@ -8,7 +8,7 @@ interpreters or execution queues in PA.
 
 ## Build and install
 
-Use Janet 1.42+, Jpm and Deno 2.9.7:
+Use Janet 1.42+, Jpm and a C compiler. Deno 2.9.7 is needed only for SDK checks:
 
 ```sh
 jpm install
@@ -16,9 +16,10 @@ deno task check
 deno task compile
 ```
 
-Jpm installs the Janet sources. Install `dist/agent` (`agent.exe` on Windows) on PATH. The compiled executable needs
-Janet and the installed PA sources, but not a Deno installation. Set `JANET_PATH` explicitly when using a nonstandard
-module tree.
+Jpm builds and installs the native `agent` executable and Janet SDK sources. `deno task compile` also builds
+`build/agent` (`agent.exe` on Windows). The normal executor embeds Janet and its loader; it needs neither Deno nor an
+external Janet interpreter. An explicit `program.command` still requires that trusted interpreter and installed PA
+sources. Set `JANET_PATH` explicitly when using a nonstandard module tree.
 
 ## Program
 
@@ -92,17 +93,19 @@ PA does not inject spawn into generated REPL environments. Applications decide w
 ## Process lifetime
 
 ```text
-observer -> agent bootstrap -> detached Janet execution
+SDK observer -> detached native executor
+CLI observer -> native bootstrap -> detached native executor
     X                              |
                             finish application work
                             commit application outcome
                             attempt terminal delivery
 ```
 
-Executions have their own process group. SDK scope release closes pipes and unreferences its bootstrap; it does not kill
-a process tree. Cancelling observation cancels its stdout reader without waiting for another program frame. Workers
-tolerate broken observation pipes. Janet spawns continuously drain intermediate frames without retaining them, even when
-the caller does not await the handle. Programs emit complete segments rather than transport fragments.
+POSIX executions detach into their own session; Windows executions detach from the console. SDK scope release closes
+pipes and unreferences its bootstrap; it does not kill a process tree. Cancelling observation cancels its stdout reader
+without waiting for another program frame. Workers tolerate broken observation pipes. Janet spawns continuously drain
+intermediate frames without retaining them, even when the caller does not await the handle. Programs emit complete
+segments rather than transport fragments.
 
 Programs must commit before returning. An acknowledgment can be lost after acceptance; lost observation is not proof
 that no work ran. Application operation keys and idempotency belong to the application.

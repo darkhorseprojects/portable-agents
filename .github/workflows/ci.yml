@@ -1,51 +1,91 @@
 name: CI
-on: [push, pull_request]
-permissions:
-  contents: read
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+permissions: { contents: read }
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 jobs:
-  check:
+  build:
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            archive: janet-v1.42.1-linux-x64.tar.gz
-            digest: 5c6cd9862c59b0691e2fd3b2e2327d1459d314a67dd08203fbff372937a20748
-          - os: macos-15
-            archive: janet-v1.42.1-macos-aarch64.tar.gz
-            digest: 53eaa09807764b246cbb7aa1a7a8bbc34a0d783f11187f00b1cf07f9b24e85cb
-          - os: windows-2025
+          - { os: ubuntu-24.04, id: linux-x86_64 }
+          - { os: ubuntu-24.04-arm, id: linux-aarch64 }
+          - { os: macos-15-intel, id: macos-x86_64 }
+          - { os: macos-15, id: macos-aarch64 }
+          - { os: windows-latest, id: windows-x86_64, arch: x64 }
+          - { os: windows-11-arm, id: windows-aarch64, arch: arm64 }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: denoland/setup-deno@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: { path: portable-agents, persist-credentials: false }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          deno-version: v2.9.7
-      - if: runner.os != 'Windows'
-        shell: bash
-        env:
-          ARCHIVE: ${{ matrix.archive }}
-          DIGEST: ${{ matrix.digest }}
+          repository: janet-lang/janet
+          ref: e1963cdfe0148f83601907727e00bd672d798115
+          path: janet
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: janet-lang/jpm
+          ref: 029d0c4cfefd2d359ddc5344eae61a1771f4e673
+          path: jpm
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with: { deno-version: v2.9.7 }
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        if: runner.os == 'Windows'
+        with: { arch: "${{ matrix.arch }}" }
+      - name: Build Unix toolchain
+        if: runner.os != 'Windows'
         run: |
-          destination="$RUNNER_TEMP/pa-janet"
-          mkdir -p "$destination"
-          curl -fsSL "https://github.com/janet-lang/janet/releases/download/v1.42.1/$ARCHIVE" -o "$RUNNER_TEMP/janet.tar.gz"
-          test "$(shasum -a 256 "$RUNNER_TEMP/janet.tar.gz" | cut -d ' ' -f 1)" = "$DIGEST"
-          tar -xzf "$RUNNER_TEMP/janet.tar.gz" --strip-components=2 -C "$destination"
-          echo "$destination/bin" >> "$GITHUB_PATH"
-          echo "LD_LIBRARY_PATH=$destination/lib" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=$destination/lib" >> "$GITHUB_ENV"
-      - if: runner.os == 'Windows'
-        shell: pwsh
+          prefix="$RUNNER_TEMP/janet"
+          make -C janet -j2 PREFIX="$prefix"
+          make -C janet install PREFIX="$prefix"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          echo "PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "JANET_HEADERPATH=$prefix/include/janet" >> "$GITHUB_ENV"
+          echo "JANET_LIBPATH=$prefix/lib" >> "$GITHUB_ENV"
+          echo "JANET_BINPATH=$prefix/bin" >> "$GITHUB_ENV"
+          echo "JANET_MODPATH=$prefix/lib/janet" >> "$GITHUB_ENV"
+          echo "JANET_PATH=$prefix/lib/janet" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$prefix/lib" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$prefix/lib" >> "$GITHUB_ENV"
+      - name: Build Windows toolchain
+        if: runner.os == 'Windows'
+        shell: cmd
         run: |
-          $archive = "$env:RUNNER_TEMP\janet.msi"
-          Invoke-WebRequest https://github.com/janet-lang/janet/releases/download/v1.42.1/janet-1.42.1-windows-x64-installer.msi -OutFile $archive
-          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -ne 'ee5833f9969361e1ecec63292f7ead17af5465716943f7eaf2d34231c8f7d958') { throw 'Janet checksum mismatch' }
-          $destination = "$env:RUNNER_TEMP\pa-janet"
-          $installer = Start-Process msiexec.exe -ArgumentList '/i', $archive, '/qn', "APPLICATIONFOLDER=$destination" -Wait -PassThru
-          if ($installer.ExitCode -ne 0) { throw "Janet installation failed: $($installer.ExitCode)" }
-          "$destination\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-      - run: janet -v
-      - run: deno task check
-      - run: deno task compile
-      - run: deno publish --dry-run
+          cd janet
+          call build_win.bat
+          if errorlevel 1 exit /b 1
+          janet.exe tools\patch-header.janet src\include\janet.h src\conf\janetconf.h build\janet.h
+          copy janet.lib build\janet.lib
+          echo %CD%>>%GITHUB_PATH%
+          echo JANET_HEADERPATH=%CD%\build>>%GITHUB_ENV%
+          echo JANET_LIBPATH=%CD%\build>>%GITHUB_ENV%
+          echo JANET_BINPATH=%CD%\bin>>%GITHUB_ENV%
+          echo JANET_MODPATH=%CD%\lib>>%GITHUB_ENV%
+          echo JANET_PATH=%CD%\lib>>%GITHUB_ENV%
+          echo %CD%\bin>>%GITHUB_PATH%
+      - name: Install pinned Jpm
+        working-directory: jpm
+        run: janet bootstrap.janet
+      - name: Static SDK checks
+        if: matrix.id == 'linux-x86_64'
+        working-directory: portable-agents
+        run: deno fmt --check && deno lint && deno check --frozen sdk/mod.ts
+      - name: Compile native boundary
+        working-directory: portable-agents
+        run: jpm build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agent-${{ matrix.id }}
+          path: ${{ runner.os == 'Windows' && 'portable-agents/build/agent.exe' || 'portable-agents/build/agent' }}
+          if-no-files-found: error
