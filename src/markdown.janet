@@ -13,12 +13,16 @@
     (when (and (string/has-prefix? "|" line) (string/has-suffix? "|" line))
       (map string/trim (string/split "|" (string/slice line 1 -2)))))
   (var i 0)
+  (var paragraph nil)
   (while (< i (length lines))
     (def line (string/trim (lines i)))
     (def content (((last stack) 1) :content))
     (def h (peg/match heading line))
     (def f (peg/match fence line))
     (var li (peg/match item line))
+    (def headers (cells line))
+    (def separators (when headers (cells (string/trim (get lines (+ i 1) "")))))
+    (when (or (= "" line) h f li separators) (set paragraph nil))
     (cond
       (= "" line) (++ i)
       h (do
@@ -47,10 +51,8 @@
            (while (and (< i (length lines)) (set li (peg/match item (string/trim (lines i)))))
              (array/push list (string/trim (li 0))) (++ i))
            (array/push content (tuple/slice list)))
-      (and (cells line) (cells (string/trim (get lines (+ i 1) ""))))
+      separators
       (do
-        (def headers (cells line))
-        (def separators (cells (string/trim (lines (+ i 1)))))
         (assert (and (= (length headers) (length separators)) (= (length headers) (length (distinct headers)))
                      (every? (map |(peg/match separator $) separators))
                      (every? (map |(not= "" $) headers))) "InvalidTable")
@@ -62,15 +64,12 @@
           (array/push rows (struct ;(interleave headers row))) (++ i))
         (array/push content (tuple/slice rows)))
       (do
-        (def paragraph @[(lines i)]) (++ i)
-        (while (and (< i (length lines)) (not= "" (string/trim (lines i)))
-                    (not (peg/match heading (string/trim (lines i)))) (not (peg/match item (string/trim (lines i))))
-                    (not (peg/match fence (string/trim (lines i))))
-                    (not (and (cells (string/trim (lines i))) (cells (string/trim (get lines (+ i 1) ""))))))
-          (array/push paragraph (lines i)) (++ i))
-        (array/push content (string/join paragraph "\n")))))
+        (unless paragraph (set paragraph @"") (array/push content paragraph))
+        (when (> (length paragraph) 0) (buffer/push-string paragraph "\n"))
+        (buffer/push-string paragraph (lines i))
+        (++ i))))
   (defn freeze [node]
-    (def content (tuple/slice (map |(if (table? $) (freeze $) $) (node :content))))
+    (def content (tuple/slice (map |(cond (table? $) (freeze $) (buffer? $) (string $) $) (node :content))))
     (if (has-key? node :name) {:name (node :name) :content content} {:content content}))
   [(freeze root) (string script)])
 

@@ -3,7 +3,7 @@
   :version "0.3.0"
   :description "A small execution boundary for ordinary Janet programs"
   :license "AGPL-3.0-only"
-  :dependencies [])
+  :dependencies [{:repo "https://github.com/janet-lang/spork.git" :tag "8a87c5ae1cbbf3a0037eeac7f172bd45da4d9910"}])
 
 (declare-source :source ["src"] :prefix "portable-agents")
 
@@ -84,6 +84,8 @@ JANET_MODULE_ENTRY(JanetTable *env) {
   :name "agent"
   :entry "src/main.janet"
   :deps ["src/protocol.janet" "src/markdown.janet"
+         (string (dyn :modpath) "/spork/base64" (dyn :modext))
+         (string (dyn :modpath) "/spork/base64" (dyn :statext))
          (string "build/portable-agents/host" (dyn :modext))
          (string "build/portable-agents/host" (dyn :statext))
          "build/portable-agents/host.meta.janet"]

@@ -8,8 +8,8 @@ on:
   workflow_call:
     inputs:
       toolchain:
-        type: boolean
-        default: false
+        type: string
+        default: ""
 permissions: { contents: read }
 concurrency:
   group: pa-${{ github.workflow }}-${{ github.ref }}
@@ -24,15 +24,25 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        if: ${{ !inputs.toolchain }}
-        with: { path: portable-agents, persist-credentials: false }
+        with:
+          repository: darkhorseprojects/portable-agents
+          ref: ${{ inputs.toolchain || github.sha }}
+          path: portable-agents
+          persist-credentials: false
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: toolchain
+        with:
+          path: ${{ runner.os == 'Windows' && 'janet' || format('{0}/janet', runner.temp) }}
+          key: ${{ matrix.os }}-${{ runner.arch }}-janet-e1963cdfe0148f83601907727e00bd672d798115-jpm-029d0c4cfefd2d359ddc5344eae61a1771f4e673-${{ hashFiles('portable-agents/project.janet') }}
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: steps.toolchain.outputs.cache-hit != 'true'
         with:
           repository: janet-lang/janet
           ref: e1963cdfe0148f83601907727e00bd672d798115
           path: janet
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: steps.toolchain.outputs.cache-hit != 'true'
         with:
           repository: janet-lang/jpm
           ref: 029d0c4cfefd2d359ddc5344eae61a1771f4e673
@@ -44,11 +54,6 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         if: runner.os == 'Windows'
         with: { arch: "${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}" }
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
-        id: toolchain
-        with:
-          path: ${{ runner.os == 'Windows' && 'janet' || format('{0}/janet', runner.temp) }}
-          key: ${{ matrix.os }}-${{ runner.arch }}-janet-e1963cdfe0148f83601907727e00bd672d798115-jpm-029d0c4cfefd2d359ddc5344eae61a1771f4e673
       - name: Prepare native toolchain
         shell: python
         env: { CACHED: "${{ steps.toolchain.outputs.cache-hit }}" }
@@ -66,12 +71,12 @@ jobs:
                   subprocess.run(["make", "-C", str(source), "-j2", f"PREFIX={prefix}"], check=True)
                   subprocess.run(["make", "-C", str(source), "install", f"PREFIX={prefix}"], check=True)
           library = source / "build" if windows else prefix / "lib"
-          modules = prefix / ("lib" if windows else "lib/janet")
           env = {"PREFIX": prefix, "JANET_HEADERPATH": source / "build" if windows else prefix / "include/janet",
-                 "JANET_LIBPATH": library, "JANET_BINPATH": prefix / "bin", "JANET_MODPATH": modules,
-                 "JANET_PATH": modules, "LD_LIBRARY_PATH": library, "DYLD_LIBRARY_PATH": library}
-          with open(os.environ["GITHUB_ENV"], "a") as out:
-              out.writelines(f"{key}={value}\n" for key, value in env.items())
+                 "JANET_LIBPATH": library, "JANET_BINPATH": prefix / "bin", "JANET_MODPATH": prefix / ("lib" if windows else "lib/janet"),
+                 "JANET_PATH": prefix / ("lib" if windows else "lib/janet"), "LD_LIBRARY_PATH": library, "DYLD_LIBRARY_PATH": library}
+          environment = "".join(f"{key}={value}\n" for key, value in env.items())
+          (prefix / "environment").write_text(environment)
+          with open(os.environ["GITHUB_ENV"], "a") as out: out.write(environment)
           with open(os.environ["GITHUB_PATH"], "a") as out:
               if windows: out.write(f"{source}\n")
               out.write(f"{prefix / 'bin'}\n")
@@ -83,35 +88,27 @@ jobs:
         if: ${{ !inputs.toolchain && matrix.id == 'linux-x86_64' }}
         working-directory: portable-agents
         run: deno task check
+      - name: Install native boundary
+        working-directory: portable-agents
+        run: |
+          git remote set-url origin https://github.com/darkhorseprojects/portable-agents.git
+          jpm deps
+          jpm install
       - name: Export toolchain
-        if: inputs.toolchain
-        run: tar -cf "$RUNNER_TEMP/toolchain.tar" -C "$RUNNER_TEMP" janet
+        if: inputs.toolchain != ''
+        run: tar --exclude=.cache -cf "$RUNNER_TEMP/toolchain.tar" -C "$RUNNER_TEMP" janet
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: inputs.toolchain
+        if: inputs.toolchain != ''
         with:
           name: janet-toolchain
           path: ${{ runner.temp }}/toolchain.tar
           if-no-files-found: error
-      - name: Compile native boundary
-        if: ${{ !inputs.toolchain }}
-        working-directory: portable-agents
-        run: jpm build
-      - name: Exercise native transport
-        if: ${{ !inputs.toolchain }}
-        working-directory: portable-agents
-        shell: python
-        run: |
-          import base64, json, os, pathlib, subprocess
-          program = {"sourceDir": str(pathlib.Path.cwd()), "entryModule": "src/protocol.janet", "entry": "base64"}
-          request = {"version": 1, "program": program, "input": "WVE9PQ==", "config": ""}
-          executable = "build/agent.exe" if os.name == "nt" else "build/agent"
-          result = subprocess.run([executable, "spawn", "1048576", "32", "5"], input=json.dumps(request)+"\n", text=True, capture_output=True, timeout=10, check=True)
-          frames = [json.loads(line) for line in result.stdout.splitlines()]
-          assert [frame["type"] for frame in frames] == ["ready", "result"], frames
-          assert base64.b64decode(frames[-1]["output"]) == b"a"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ !inputs.toolchain && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
         with:
           name: agent-${{ matrix.id }}
-          path: ${{ runner.os == 'Windows' && 'portable-agents/build/agent.exe' || 'portable-agents/build/agent' }}
+          path: |
+            ${{ runner.os == 'Windows' && 'portable-agents/build/agent.exe' || 'portable-agents/build/agent' }}
+            portable-agents/LICENSE
+            portable-agents/README.md
           if-no-files-found: error

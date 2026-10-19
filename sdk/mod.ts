@@ -1,6 +1,8 @@
 /** Opaque-byte programs over Portable Agents protocol 1. @module */
 import { spawn as spawnProcess } from "node:child_process";
 import process from "node:process";
+import { once } from "node:events";
+import { addAbortSignal } from "node:stream";
 
 /** A selected package and its explicit @name dependency roots. */
 export interface Program {
@@ -40,6 +42,14 @@ export class AgentError extends Error {
 }
 
 const base64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=|[A-Za-z0-9+/][AQgw]==)?(?![\s\S])/;
+const fields = new Map<string, readonly string[]>([
+  ["ready", []],
+  ["emit", ["output"]],
+  ["result", ["output"]],
+  ["log", ["stage"]],
+  ["traceback", ["message"]],
+  ["error", ["code", "message"]],
+]);
 
 /** Observe a detached execution; terminal output requires EOF and successful exit. */
 export async function* spawn(
@@ -86,36 +96,24 @@ export async function* spawn(
   } catch (cause) {
     throw new AgentError("ProcessFailure", String(cause));
   }
-  const exited = Promise.withResolvers<number | AgentError>();
-  child.once("error", (cause) => {
-    const error = new AgentError("ProcessFailure", String(cause));
-    exited.resolve(error);
-    child.stdout!.destroy(error);
+  const failure = new AbortController();
+  const signal = AbortSignal.any([failure.signal, ...(options.signal ? [options.signal] : [])]);
+  const exited = once(child, "close", { signal }).then(([code]) => code ?? -1, (cause) => {
+    failure.abort(new AgentError("ProcessFailure", String(cause)));
+    return -1;
   });
-  child.once("close", (code) => exited.resolve(code ?? -1));
-  child.stdin!.on("error", (cause) => {
-    const error = new AgentError("ProcessFailure", String(cause));
-    exited.resolve(error);
-    child.stdout!.destroy(error);
-  });
-  const abort = () => {
-    const error = new AgentError("ObservationCancelled", String(options.signal!.reason));
-    exited.resolve(error);
-    child.stdout!.destroy(error);
-  };
-  const admission = setTimeout(() => {
-    const error = new AgentError("AdmissionTimeout", "Execution may have accepted the request");
-    exited.resolve(error);
-    child.stdout!.destroy(error);
-  }, limits.admissionSeconds * 1000);
-  options.signal?.addEventListener("abort", abort, { once: true });
+  child.stdin!.on("error", (cause) => failure.abort(new AgentError("ProcessFailure", String(cause))));
+  addAbortSignal(signal, child.stdout!);
+  const admission = setTimeout(() =>
+    failure.abort(
+      new AgentError("AdmissionTimeout", "Execution may have accepted the request"),
+    ), limits.admissionSeconds * 1000);
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   const pending = new Uint8Array(new ArrayBuffer(0, { maxByteLength: limits.frameBytes - 1 }));
   let used = 0;
   let terminal: Event | AgentError | undefined;
   let admitted = false;
   try {
-    if (options.signal?.aborted) abort();
     child.stdin!.end(request);
     for await (const chunk of child.stdout! as AsyncIterable<Uint8Array>) {
       try {
@@ -142,31 +140,17 @@ export async function* spawn(
           if (!line) throw new Error("Empty frame");
           const raw = JSON.parse(line);
           const keys = new Set<string>();
-          let objects = 0;
-          for (const match of line.matchAll(/"(?:[^"\\]|\\.)*"|[{}\[\]]/g)) {
-            const token = match[0];
-            if (token === "{" && ++objects !== 1 || token === "[" || token === "]") {
-              throw new Error("Nonflat frame");
-            }
-            if (token.startsWith('"') && /^[ \t\r]*:/.test(line.slice(match.index + token.length))) {
-              const key: string = JSON.parse(token);
-              if (keys.has(key)) throw new Error("Duplicate object key");
-              keys.add(key);
-            }
+          for (const match of line.matchAll(/"(?:[^"\\]|\\.)*"([ \t\r]*:)?/g)) {
+            if (!match[1]) continue;
+            const key: string = JSON.parse(match[0].slice(0, -match[1].length));
+            if (keys.has(key)) throw new Error("Duplicate object key");
+            keys.add(key);
           }
-          const fields = raw?.type === "ready"
-            ? []
-            : raw?.type === "error"
-            ? ["code", "message"]
-            : raw?.type === "log"
-            ? ["stage"]
-            : raw?.type === "traceback"
-            ? ["message"]
-            : ["output"];
+          const required = fields.get(raw?.type);
           if (
-            raw?.version !== 1 || !["ready", "emit", "result", "log", "traceback", "error"].includes(raw?.type) ||
-            keys.size !== fields.length + 2 || !keys.has("version") || !keys.has("type") ||
-            fields.some((key) => !keys.has(key) || typeof raw[key] !== "string" || !raw[key].isWellFormed())
+            raw?.version !== 1 || !required || keys.size !== required.length + 2 ||
+            !keys.has("version") || !keys.has("type") ||
+            required.some((key) => !keys.has(key) || typeof raw[key] !== "string" || !raw[key].isWellFormed())
           ) throw new Error("Invalid frame fields");
           if (raw.type === "ready") {
             if (admitted) throw new Error("Duplicate admission");
@@ -188,16 +172,20 @@ export async function* spawn(
       }
     }
     if (used || !terminal) throw new AgentError("InvalidProtocol", "Missing or partial terminal");
-    const code = await exited.promise;
-    if (code instanceof AgentError) throw code;
+    const code = await exited;
+    signal.throwIfAborted();
     if (code !== 0) throw new AgentError("ProcessFailure", `agent exited ${code}`);
     if (terminal instanceof AgentError) throw terminal;
     yield terminal;
   } catch (cause) {
+    if (signal.aborted) {
+      throw signal.reason instanceof AgentError
+        ? signal.reason
+        : new AgentError("ObservationCancelled", String(signal.reason));
+    }
     throw cause instanceof AgentError ? cause : new AgentError("ProcessFailure", String(cause));
   } finally {
     clearTimeout(admission);
-    options.signal?.removeEventListener("abort", abort);
     child.unref();
     child.stdin!.destroy();
     child.stdout!.destroy();

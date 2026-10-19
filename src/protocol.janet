@@ -1,3 +1,5 @@
+(import spork/base64 :as native-base64)
+
 (def version 1)
 
 (defn record [value required optional]
@@ -30,7 +32,6 @@
   value)
 
 (def- alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
-(def- indices (table ;(catseq [i :range [0 64]] [(alphabet i) i])))
 (def- base64-shape (peg/compile ~(* (any (repeat 4 (set ,alphabet)))
                                   (opt (choice (* (repeat 2 (set ,alphabet)) (set "AEIMQUYcgkosw048") "=")
                                                (* (set ,alphabet) (set "AQgw") "=="))) -1)))
@@ -42,23 +43,7 @@
   (if (= decode :check) bytes
     (do
       (unless decode (assert (<= (* 4 (math/ceil (/ (length bytes) 3))) bound) "TransportLimit"))
-      (def out @"")
-      (def step (if decode 4 3))
-      (for i 0 (math/ceil (/ (length bytes) step))
-        (def offset (* i step))
-        (if decode
-          (do
-            (var value 0)
-            (for j 0 4 (def c (bytes (+ offset j))) (set value (+ (* value 64) (if (= c 61) 0 (indices c)))))
-            (buffer/push-byte out (band 255 (brshift value 16)))
-            (unless (= 61 (bytes (+ offset 2))) (buffer/push-byte out (band 255 (brshift value 8))))
-            (unless (= 61 (bytes (+ offset 3))) (buffer/push-byte out (band 255 value))))
-          (do
-            (def value (+ (* 65536 (get bytes offset 0)) (* 256 (get bytes (+ offset 1) 0)) (get bytes (+ offset 2) 0)))
-            (each shift [18 12 6 0]
-              (buffer/push-byte out (if (< (+ offset (case shift 6 1 0 2 0)) (length bytes))
-                                      (alphabet (band 63 (brshift value shift))) 61))))))
-      (string out))))
+      (if decode (native-base64/decode bytes) (native-base64/encode bytes)))))
 
 (defn request [value]
   (record value ["version" "program" "input" "config"] [])

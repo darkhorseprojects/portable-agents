@@ -10,6 +10,9 @@ return the cached outcome.
 Protocol version remains 1. Install matching native binaries and Janet sources. The SDK API change has no compatibility
 adapter.
 
-Native executable-path discovery uses a managed growth buffer. CI checks the SDK once, exercises native transport and
-caches the toolchain. Ordinary changes build three platforms; tags and manual runs build all six. Build artifacts are
-uploaded only for tags and manual runs.
+Base64 uses the pinned native Spork codec while retaining PA's canonical encoding and byte-bound checks. TypeScript
+observation uses standard stream cancellation and process-exit promises.
+
+Native executable-path discovery uses a managed growth buffer. CI checks the SDK once, builds native artifacts and
+exports the matching installed PA/Janet/Jpm toolchain. Ordinary changes build three platforms; tags and manual runs
+build all six. Build artifacts are uploaded only for tags and manual runs.
