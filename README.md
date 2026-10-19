@@ -15,6 +15,9 @@ deno task check
 jpm install
 ```
 
+The existing CI workflow also exports the pinned Linux Janet/Jpm toolchain through `workflow_call` with
+`toolchain: true`. Consumers install that artifact rather than maintaining another bootstrap.
+
 Jpm builds and installs the native `agent` executable and Janet SDK sources. `deno task compile` also builds
 `build/agent` (`agent.exe` on Windows). The normal executor embeds Janet and its loader; it needs neither Deno nor an
 external Janet interpreter. An explicit `program.command` still requires that trusted interpreter and installed PA
