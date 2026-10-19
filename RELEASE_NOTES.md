@@ -1,25 +1,13 @@
-# Complete segments only
+# 0.3.0
 
-The request observation switch and append frame/mode are removed. Programs emit complete application segments. Janet
-spawn drains intermediate frames immediately without accumulating them; ignoring a handle does not stop collection.
-Closed observation pipes still do not cancel accepted execution. Install matching binaries and sources together; old
-request flags and append frames are rejected rather than adapted.
+The TypeScript `spawn` API is now a native async generator, with no Effect dependency. Consume it with `for await`;
+failures throw `AgentError` with a stable `code`. An optional abort signal interrupts blocked reads and exit waits
+without killing accepted execution. Breaking iteration also closes observation.
 
-# Silent observation cancellation
+Janet observers and the CLI share admission and terminal validation in the protocol reader. Repeated Janet awaits still
+return the cached outcome.
 
-SDK stdout uses a cancellable readable-stream adapter instead of awaiting an async iterator's return behind a pending
-read. Observer release does not wait for a silent execution to produce output and does not kill accepted execution.
+Protocol version remains 1. Install matching native binaries and Janet sources. The SDK API change has no compatibility
+adapter.
 
-# Development baseline
-
-PA now has one spawn boundary and one NDJSON transport. TCP workers, nonce admission, RPC registries, program-shaped
-import grants and call/invoke APIs are removed.
-
-The native bootstrap launches independent Janet execution on each platform. SDK cleanup closes observation pipes rather
-than killing a process tree. Programs own durable outcomes and must commit before returning.
-
-Capability proxies are ordinary Janet libraries. PA declares no application-specific self or world policy. Programs
-select their public export explicitly.
-
-Install the matching compiled agent and Janet sources together. This is a development API change; no old
-protocol/configuration adapters are supplied. Protocol version remains 1.
+CI checks the SDK once and builds the six native targets. Build artifacts are uploaded only for tags and manual runs.

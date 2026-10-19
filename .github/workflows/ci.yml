@@ -39,6 +39,7 @@ jobs:
           path: jpm
           persist-credentials: false
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        if: matrix.id == 'linux-x86_64'
         with: { deno-version: v2.9.7 }
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         if: runner.os == 'Windows'
@@ -77,14 +78,15 @@ jobs:
       - name: Install pinned Jpm
         working-directory: jpm
         run: janet bootstrap.janet
-      - name: Static SDK checks
+      - name: Check SDK
         if: matrix.id == 'linux-x86_64'
         working-directory: portable-agents
-        run: deno fmt --check && deno lint && deno check --frozen sdk/mod.ts
+        run: deno task check
       - name: Compile native boundary
         working-directory: portable-agents
         run: jpm build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         with:
           name: agent-${{ matrix.id }}
           path: ${{ runner.os == 'Windows' && 'portable-agents/build/agent.exe' || 'portable-agents/build/agent' }}

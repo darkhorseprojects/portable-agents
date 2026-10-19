@@ -11,9 +11,8 @@ interpreters or execution queues in PA.
 Use Janet 1.42+, Jpm and a C compiler. Deno 2.9.7 is needed only for SDK checks:
 
 ```sh
-jpm install
 deno task check
-deno task compile
+jpm install
 ```
 
 Jpm builds and installs the native `agent` executable and Janet SDK sources. `deno task compile` also builds
@@ -54,25 +53,28 @@ The TypeScript SDK has one operation:
 
 ```ts
 import { spawn } from "jsr:@darkhorseprojects/portable-agents";
-import { Effect, Stream } from "npm:effect@4.0.3";
 
-const output = await Effect.runPromise(Stream.runCollect(spawn(
-  {
-    program: { sourceDir: "/runtime/example", entryModule: "main.janet", entry: "answer" },
-    limits: { frameBytes: 1048576, depth: 32, admissionSeconds: 5 },
-  },
-  new Uint8Array(),
-  new Uint8Array(),
-)));
+for await (
+  const event of spawn(
+    {
+      program: { sourceDir: "/runtime/example", entryModule: "main.janet", entry: "answer" },
+      limits: { frameBytes: 1048576, depth: 32, admissionSeconds: 5 },
+    },
+    new Uint8Array(),
+    new Uint8Array(),
+  )
+) {
+  console.log(event);
+}
 ```
 
-`spawn` is an Effect stream: consuming it starts execution. Events are complete emitted segments, stage logs, tracebacks
-and a terminal result. `pa/emit` takes one byte value; there is no append mode or observation switch. `AgentError`
-supplies typed failures. Use Effect's existing stream/fiber operators to collect results or stop observation. There are
-no platform-service layers, factories or second `call`/`stream` APIs.
+`spawn` is an async generator: consuming it starts execution. Events are complete emitted segments, stage logs,
+tracebacks and a terminal result. Failures throw `AgentError` with a stable `code`. Breaking iteration closes
+observation; an optional `signal` also interrupts blocked reads or exit waits without terminating accepted execution.
+`pa/emit` takes one byte value. There are no framework dependencies, factories or second `call`/`stream` APIs.
 
-Optional settings are the agent executable command, working directory and environment. This host SDK uses standard Node
-process APIs and runs in Node-compatible hosts including Deno.
+Optional settings are the agent executable command, working directory, environment and abort signal. This host SDK uses
+standard Node process APIs and runs in Node-compatible hosts including Deno.
 
 The trusted Janet SDK exposes `pa/spawn` and `pa/await`:
 
@@ -101,7 +103,7 @@ CLI observer -> native bootstrap -> detached native executor
                             attempt terminal delivery
 ```
 
-POSIX executions detach into their own session; Windows executions detach from the console. SDK scope release closes
+POSIX executions detach into their own session; Windows executions detach from the console. SDK iterator cleanup closes
 pipes and unreferences its bootstrap; it does not kill a process tree. Cancelling observation cancels its stdout reader
 without waiting for another program frame. Workers tolerate broken observation pipes. Janet spawns continuously drain
 intermediate frames without retaining them, even when the caller does not await the handle. Programs emit complete

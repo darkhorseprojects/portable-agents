@@ -18,15 +18,15 @@
                           :d {:in :pipe :out :pipe :err stderr}))
     (def exited (ev/chan))
     (ev/go (fn [] (os/proc-wait process)) nil exited)
-    (def reader (p/reader (process :out)))
+    (def reader (p/reader (process :out) true))
     (def handle @{:done (ev/chan 1)})
     (var admitted false)
     (defer (unless admitted (ev/close (process :out)))
       (defer (ev/close (process :in))
         (p/send (process :in) request))
       (ev/with-deadline (limits "admissionSeconds")
-        (var ready (p/event (p/receive reader)))
-        (while (index-of (ready "type") ["traceback" "log"]) (set ready (p/event (p/receive reader))))
+        (var ready (p/receive reader))
+        (while (index-of (ready "type") ["traceback" "log"]) (set ready (p/receive reader)))
         (assert (= "ready" (ready "type")) (get ready "message" "ProcessFailure")))
       (set admitted true)
       (ev/go (fn []
@@ -35,16 +35,11 @@
             (put handle :outcome
                  (try
                    (do
-                     (var terminal nil)
                      (var frame nil)
                      (while (set frame (p/receive reader))
-                       (assert (not terminal) "InvalidProtocol")
-                       (def event (p/event frame))
-                       (assert (not= "ready" (event "type")) "InvalidProtocol")
-                       (when (and (= "emit" (event "type")) (options :emit))
-                         ((options :emit) (p/base64 (event "output") true)))
-                       (when (index-of (event "type") ["result" "error"]) (set terminal event)))
-                     (assert terminal "InvalidProtocol")
+                       (when (and (= "emit" (frame "type")) (options :emit))
+                         ((options :emit) (p/base64 (frame "output") true))))
+                     (def terminal (reader :terminal))
                      (ev/take exited)
                      (assert (= 0 (process :return-code)) "ProcessFailure")
                      (if (= "result" (terminal "type")) [true (p/base64 (terminal "output") true)]

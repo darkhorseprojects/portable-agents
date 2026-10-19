@@ -167,7 +167,7 @@
   (:write io bytes)
   (when (get io :flush) (:flush io)))
 
-(defn reader [io] @{:io io :bytes @""})
+(defn reader [io &opt events] @{:io io :bytes @"" :events events})
 
 (defn receive [state]
   (def bound ((dyn :pa/limits) "frameBytes"))
@@ -176,14 +176,22 @@
     (assert (< (length (state :bytes)) bound) "TransportLimit")
     (def chunk (:read (state :io) (min 4096 (- bound (length (state :bytes))))))
     (unless chunk
-      (assert (= 0 (length (state :bytes))) "InvalidProtocol")
+      (assert (and (= 0 (length (state :bytes))) (or (not (state :events)) (state :terminal))) "InvalidProtocol")
       (break))
     (buffer/push-string (state :bytes) chunk)
     (set line (string/find "\n" (state :bytes))))
   (when line
     (def bytes (string/slice (state :bytes) 0 line))
     (put state :bytes (buffer (string/slice (state :bytes) (+ line 1))))
-    (json bytes true)))
+    (def value (json bytes true))
+    (when (state :events)
+      (event value)
+      (assert (not (state :terminal)) "InvalidProtocol")
+      (case (value "type")
+        "ready" (do (assert (not (state :ready)) "InvalidProtocol") (put state :ready true))
+        (assert (or (state :ready) (index-of (value "type") ["log" "traceback" "error"])) "InvalidProtocol"))
+      (when (index-of (value "type") ["result" "error"]) (put state :terminal value)))
+    value))
 
 (defn diagnostic [type err & fields]
   (def result (frame type "message" "" ;fields))
