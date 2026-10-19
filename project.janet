@@ -25,49 +25,36 @@
 static Janet executable(int32_t argc, Janet *argv) {
     (void)argv;
     janet_fixarity(argc, 0);
-    size_t capacity = 256;
+    JanetBuffer *buffer = janet_buffer(256);
     for (;;) {
 #ifdef _WIN32
-        wchar_t *wide = malloc(capacity * sizeof(wchar_t));
-        if (!wide) janet_panic("executable path allocation failed");
-        DWORD length = GetModuleFileNameW(NULL, wide, (DWORD)capacity);
-        if (!length) { free(wide); janet_panic("GetModuleFileNameW failed"); }
+        wchar_t *wide = (wchar_t *)buffer->data;
+        DWORD capacity = (DWORD)buffer->capacity / sizeof(wchar_t);
+        DWORD length = GetModuleFileNameW(NULL, wide, capacity);
+        if (!length) janet_panic("GetModuleFileNameW failed");
         if (length < capacity) {
             int size = WideCharToMultiByte(CP_UTF8, 0, wide, length, NULL, 0, NULL, NULL);
-            if (!size) { free(wide); janet_panic("executable path conversion failed"); }
+            if (!size) janet_panic("executable path conversion failed");
             uint8_t *path = janet_string_begin(size);
             if (WideCharToMultiByte(CP_UTF8, 0, wide, length, (char *)path, size, NULL, NULL) != size)
                 janet_panic("executable path conversion failed");
-            free(wide);
             return janet_wrap_string(janet_string_end(path));
         }
-        free(wide);
-#else
-        char *path = malloc(capacity);
-        if (!path) janet_panic("executable path allocation failed");
-#ifdef __APPLE__
-        uint32_t size = (uint32_t)capacity;
-        int status = _NSGetExecutablePath(path, &size);
-        if (!status) {
-            char *absolute = realpath(path, NULL);
-            free(path);
+#elif defined(__APPLE__)
+        uint32_t size = (uint32_t)buffer->capacity;
+        if (!_NSGetExecutablePath((char *)buffer->data, &size)) {
+            char *absolute = realpath((char *)buffer->data, NULL);
             if (!absolute) janet_panic(strerror(errno));
             Janet result = janet_cstringv(absolute);
             free(absolute);
             return result;
         }
 #else
-        ssize_t size = readlink("/proc/self/exe", path, capacity);
-        if (size < 0) { free(path); janet_panic(strerror(errno)); }
-        if ((size_t)size < capacity) {
-            Janet result = janet_stringv((const uint8_t *)path, (int32_t)size);
-            free(path);
-            return result;
-        }
+        ssize_t size = readlink("/proc/self/exe", (char *)buffer->data, buffer->capacity);
+        if (size < 0) janet_panic(strerror(errno));
+        if (size < buffer->capacity) return janet_stringv(buffer->data, (int32_t)size);
 #endif
-        free(path);
-#endif
-        capacity *= 2;
+        janet_buffer_ensure(buffer, buffer->capacity + 1, 2);
     }
 }
 

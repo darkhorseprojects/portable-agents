@@ -15,13 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: ubuntu-24.04, id: linux-x86_64 }
-          - { os: ubuntu-24.04-arm, id: linux-aarch64 }
-          - { os: macos-15-intel, id: macos-x86_64 }
-          - { os: macos-15, id: macos-aarch64 }
-          - { os: windows-latest, id: windows-x86_64, arch: x64 }
-          - { os: windows-11-arm, id: windows-aarch64, arch: arm64 }
+        include: ${{ fromJSON((startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && '[{"os":"ubuntu-24.04","id":"linux-x86_64"},{"os":"ubuntu-24.04-arm","id":"linux-aarch64"},{"os":"macos-15-intel","id":"macos-x86_64"},{"os":"macos-15","id":"macos-aarch64"},{"os":"windows-latest","id":"windows-x86_64"},{"os":"windows-11-arm","id":"windows-aarch64"}]' || '[{"os":"ubuntu-24.04","id":"linux-x86_64"},{"os":"macos-15","id":"macos-aarch64"},{"os":"windows-latest","id":"windows-x86_64"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -43,39 +37,40 @@ jobs:
         with: { deno-version: v2.9.7 }
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         if: runner.os == 'Windows'
-        with: { arch: "${{ matrix.arch }}" }
-      - name: Build Unix toolchain
-        if: runner.os != 'Windows'
+        with: { arch: "${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}" }
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: toolchain
+        with:
+          path: ${{ runner.os == 'Windows' && 'janet' || format('{0}/janet', runner.temp) }}
+          key: ${{ matrix.os }}-${{ runner.arch }}-janet-e1963cdfe0148f83601907727e00bd672d798115-jpm-029d0c4cfefd2d359ddc5344eae61a1771f4e673
+      - name: Prepare native toolchain
+        shell: python
+        env: { CACHED: "${{ steps.toolchain.outputs.cache-hit }}" }
         run: |
-          prefix="$RUNNER_TEMP/janet"
-          make -C janet -j2 PREFIX="$prefix"
-          make -C janet install PREFIX="$prefix"
-          echo "$prefix/bin" >> "$GITHUB_PATH"
-          echo "PREFIX=$prefix" >> "$GITHUB_ENV"
-          echo "JANET_HEADERPATH=$prefix/include/janet" >> "$GITHUB_ENV"
-          echo "JANET_LIBPATH=$prefix/lib" >> "$GITHUB_ENV"
-          echo "JANET_BINPATH=$prefix/bin" >> "$GITHUB_ENV"
-          echo "JANET_MODPATH=$prefix/lib/janet" >> "$GITHUB_ENV"
-          echo "JANET_PATH=$prefix/lib/janet" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$prefix/lib" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=$prefix/lib" >> "$GITHUB_ENV"
-      - name: Build Windows toolchain
-        if: runner.os == 'Windows'
-        shell: cmd
-        run: |
-          cd janet
-          call build_win.bat
-          if errorlevel 1 exit /b 1
-          janet.exe tools\patch-header.janet src\include\janet.h src\conf\janetconf.h build\janet.h
-          copy janet.lib build\janet.lib
-          echo %CD%>>%GITHUB_PATH%
-          echo JANET_HEADERPATH=%CD%\build>>%GITHUB_ENV%
-          echo JANET_LIBPATH=%CD%\build>>%GITHUB_ENV%
-          echo JANET_BINPATH=%CD%\bin>>%GITHUB_ENV%
-          echo JANET_MODPATH=%CD%\lib>>%GITHUB_ENV%
-          echo JANET_PATH=%CD%\lib>>%GITHUB_ENV%
-          echo %CD%\bin>>%GITHUB_PATH%
+          import os, pathlib, shutil, subprocess
+          windows = os.name == "nt"
+          source = pathlib.Path("janet").resolve()
+          prefix = source if windows else pathlib.Path(os.environ["RUNNER_TEMP"]) / "janet"
+          if os.environ["CACHED"] != "true":
+              if windows:
+                  subprocess.run(["cmd", "/c", "build_win.bat"], cwd=source, check=True)
+                  subprocess.run([str(source / "janet.exe"), "tools/patch-header.janet", "src/include/janet.h", "src/conf/janetconf.h", "build/janet.h"], cwd=source, check=True)
+                  shutil.copyfile(source / "janet.lib", source / "build/janet.lib")
+              else:
+                  subprocess.run(["make", "-C", str(source), "-j2", f"PREFIX={prefix}"], check=True)
+                  subprocess.run(["make", "-C", str(source), "install", f"PREFIX={prefix}"], check=True)
+          library = source / "build" if windows else prefix / "lib"
+          modules = prefix / ("lib" if windows else "lib/janet")
+          env = {"PREFIX": prefix, "JANET_HEADERPATH": source / "build" if windows else prefix / "include/janet",
+                 "JANET_LIBPATH": library, "JANET_BINPATH": prefix / "bin", "JANET_MODPATH": modules,
+                 "JANET_PATH": modules, "LD_LIBRARY_PATH": library, "DYLD_LIBRARY_PATH": library}
+          with open(os.environ["GITHUB_ENV"], "a") as out:
+              out.writelines(f"{key}={value}\n" for key, value in env.items())
+          with open(os.environ["GITHUB_PATH"], "a") as out:
+              if windows: out.write(f"{source}\n")
+              out.write(f"{prefix / 'bin'}\n")
       - name: Install pinned Jpm
+        if: steps.toolchain.outputs.cache-hit != 'true'
         working-directory: jpm
         run: janet bootstrap.janet
       - name: Check SDK
@@ -85,6 +80,18 @@ jobs:
       - name: Compile native boundary
         working-directory: portable-agents
         run: jpm build
+      - name: Exercise native transport
+        working-directory: portable-agents
+        shell: python
+        run: |
+          import base64, json, os, pathlib, subprocess
+          program = {"sourceDir": str(pathlib.Path.cwd()), "entryModule": "src/protocol.janet", "entry": "base64"}
+          request = {"version": 1, "program": program, "input": "WVE9PQ==", "config": ""}
+          executable = "build/agent.exe" if os.name == "nt" else "build/agent"
+          result = subprocess.run([executable, "spawn", "1048576", "32", "5"], input=json.dumps(request)+"\n", text=True, capture_output=True, timeout=10, check=True)
+          frames = [json.loads(line) for line in result.stdout.splitlines()]
+          assert [frame["type"] for frame in frames] == ["ready", "result"], frames
+          assert base64.b64decode(frames[-1]["output"]) == b"a"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         with:

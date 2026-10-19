@@ -10,4 +10,6 @@ return the cached outcome.
 Protocol version remains 1. Install matching native binaries and Janet sources. The SDK API change has no compatibility
 adapter.
 
-CI checks the SDK once and builds the six native targets. Build artifacts are uploaded only for tags and manual runs.
+Native executable-path discovery uses a managed growth buffer. CI checks the SDK once, exercises native transport and
+caches the toolchain. Ordinary changes build three platforms; tags and manual runs build all six. Build artifacts are
+uploaded only for tags and manual runs.
