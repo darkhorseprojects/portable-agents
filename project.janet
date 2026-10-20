@@ -86,6 +86,10 @@ JANET_MODULE_ENTRY(JanetTable *env) {
   :deps ["src/protocol.janet" "src/markdown.janet"
          (string (dyn :modpath) "/spork/base64" (dyn :modext))
          (string (dyn :modpath) "/spork/base64" (dyn :statext))
+         (string (dyn :modpath) "/spork/json" (dyn :modext))
+         (string (dyn :modpath) "/spork/json" (dyn :statext))
+         (string (dyn :modpath) "/spork/utf8" (dyn :modext))
+         (string (dyn :modpath) "/spork/utf8" (dyn :statext))
          (string "build/portable-agents/host" (dyn :modext))
          (string "build/portable-agents/host" (dyn :statext))
          "build/portable-agents/host.meta.janet"]

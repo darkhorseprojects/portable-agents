@@ -13,7 +13,7 @@
     (def request (p/request {"version" p/version "program" program "input" (p/base64 input)
                             "config" (p/base64 config)}))
     (def process (os/spawn [(dyn :pa/executable) "execute"
-                           ;(map |(string (limits $)) ["frameBytes" "depth" "admissionSeconds"])]
+                           ;(map |(string (limits $)) ["frameBytes" "admissionSeconds"])]
                           :d {:in :pipe :out :pipe :err stderr}))
     (def exited (ev/chan))
     (ev/go (fn [] (os/proc-wait process)) nil exited)

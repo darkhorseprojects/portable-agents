@@ -1,20 +1,13 @@
 # 0.3.0
 
-The TypeScript `spawn` API is now a native async generator, with no Effect dependency. Consume it with `for await`;
-failures throw `AgentError` with a stable `code`. An optional abort signal interrupts blocked reads and exit waits
-without killing accepted execution. Breaking iteration also closes observation.
+Protocol 2 uses native Spork JSON, UTF-8 and Base64 codecs. PA validates consumed fields and transport bounds rather
+than duplicate keys, canonical encodings, unknown fields or a configurable JSON depth. Install matching binaries, Janet
+sources and TypeScript SDKs; there is no protocol-1 adapter.
 
-Janet observers and the CLI share admission and terminal validation in the protocol reader. Repeated Janet awaits still
-return the cached outcome. The collector, not an arbitrary awaiter, owns completion-channel closure, including
-concurrent awaits. TypeScript duplicate-key validation counts lexical keys against decoded own keys without a second key
-decoder; strict framing, canonical Base64, EOF and exit checks remain.
+The CLI takes `spawn FRAME-BYTES ADMISSION-SECONDS`. Input/config decoding precedes source loading and acceptance. The
+TypeScript SDK uses bounded streaming UTF-8 decoding. Both SDKs preserve admission ordering, terminal uniqueness, EOF,
+exit checks and observation cancellation without killing accepted work.
 
-Protocol version remains 1. Install matching native binaries and Janet sources. The SDK API change has no compatibility
-adapter.
-
-Base64 uses the pinned native Spork codec while retaining PA's canonical encoding and byte-bound checks. TypeScript
-observation uses standard stream cancellation and process-exit promises.
-
-Native executable-path discovery uses a managed growth buffer. CI checks the SDK once, builds native artifacts and
-exports the matching installed PA/Janet/Jpm toolchain. Ordinary changes build three platforms; tags and manual runs
-build all six. Build artifacts are uploaded only for tags and manual runs.
+CI caches Janet/Jpm bootstrap independently of PA dependencies, saves it before installing PA, and exports the matching
+installed toolchain separately. Downstream toolchain calls skip redundant PA regressions. Native codec and streaming
+boundary regressions run on PA changes; ordinary changes build three platforms, releases and manual runs all six.

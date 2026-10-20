@@ -29,11 +29,11 @@ jobs:
           ref: ${{ inputs.toolchain || github.sha }}
           path: portable-agents
           persist-credentials: false
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         id: toolchain
         with:
           path: ${{ runner.os == 'Windows' && 'janet' || format('{0}/janet', runner.temp) }}
-          key: ${{ matrix.os }}-${{ runner.arch }}-janet-e1963cdfe0148f83601907727e00bd672d798115-jpm-029d0c4cfefd2d359ddc5344eae61a1771f4e673-${{ hashFiles('portable-agents/project.janet') }}
+          key: ${{ matrix.os }}-${{ runner.arch }}-janet-e1963cdfe0148f83601907727e00bd672d798115-jpm-029d0c4cfefd2d359ddc5344eae61a1771f4e673
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         if: steps.toolchain.outputs.cache-hit != 'true'
         with:
@@ -84,6 +84,11 @@ jobs:
         if: steps.toolchain.outputs.cache-hit != 'true'
         working-directory: jpm
         run: janet bootstrap.janet
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.os == 'Windows' && 'janet' || format('{0}/janet', runner.temp) }}
+          key: ${{ steps.toolchain.outputs.cache-primary-key }}
       - name: Check SDK
         if: ${{ !inputs.toolchain && matrix.id == 'linux-x86_64' }}
         working-directory: portable-agents
@@ -95,6 +100,7 @@ jobs:
           jpm deps
           jpm install
       - name: Exercise native boundary
+        if: ${{ !inputs.toolchain }}
         working-directory: portable-agents
         shell: python
         env:
@@ -104,10 +110,15 @@ jobs:
           executable = str(pathlib.Path("build/agent.exe" if os.name == "nt" else "build/agent").resolve())
           subprocess.run([shutil.which("janet"), "-e", r'''
             (import ./src/protocol :as p)
-            (with-dyns [:pa/limits {"frameBytes" 4096 "depth" 8 "admissionSeconds" 2}]
-              (each value [`{"a":1,"\u0061":2}` `01` `[1,]` `1e999` `"\ud800"`]
+            (with-dyns [:pa/limits {"frameBytes" 4096 "admissionSeconds" 2}]
+              (each value [`"\ud800"` `{} {}`]
                 (assert (= :invalid (try (p/json value true) ([err] :invalid)))))
-              (assert (= :json-null (p/json "null" true))))'''], check=True)
+              (assert (= 2 ((p/json `{"a":1,"\u0061":2}` true) "a")))
+              (assert (= 1 (p/json "01" true)))
+              (assert (deep= @[1] (p/json "[1,]" true)))
+              (assert (= math/inf (p/json "1e999" true)))
+              (assert (= :null (p/json "null" true)))
+              (assert (= "a" (p/base64 "YR==" true))))'''], check=True)
           with tempfile.TemporaryDirectory() as directory:
               path = pathlib.Path(directory)
               source = '''(module/add-syspath (dyn :library))
@@ -123,15 +134,15 @@ jobs:
               def wire(entry, config=b"", command=None):
                   target = dict(program, entry=entry)
                   if command: target["command"] = command
-                  return (json.dumps(dict(version=1, program=target, input=base64.b64encode(b"bytes\0\xff").decode(),
+                  return (json.dumps(dict(version=2, program=target, input=base64.b64encode(b"bytes\0\xff").decode(),
                       config=base64.b64encode(config).decode()))+"\n").encode()
               for entry, command in [("echo", None), ("echo", [shutil.which("janet")]), ("nested", None)]:
-                  process = subprocess.run([executable,"spawn","1048576","32","3"],
+                  process = subprocess.run([executable,"spawn","1048576","3"],
                       input=wire(entry,str(path/"nested").encode(),command), capture_output=True, timeout=15)
                   frames = [json.loads(line) for line in process.stdout.splitlines()]
                   assert process.returncode == 0 and frames[-1]["type"] == "result", (frames,process.stderr)
                   assert base64.b64decode(frames[-1]["output"]) == b"bytes\0\xff"
-              process = subprocess.Popen([executable,"spawn","1048576","32","3"],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+              process = subprocess.Popen([executable,"spawn","1048576","3"],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
               process.stdin.write(wire("finish",str(path/"detached").encode()));process.stdin.close()
               assert json.loads(process.stdout.readline())["type"] == "ready"
               process.kill();process.wait();process.stdout.close();process.stderr.close()
@@ -143,7 +154,7 @@ jobs:
                     import assert from "node:assert/strict";
                     import {spawn,AgentError} from "./sdk/mod.ts";
                     const [directory,executable]=Deno.args;
-                    const limits={frameBytes:1048576,depth:32,admissionSeconds:3};
+                    const limits={frameBytes:1048576,admissionSeconds:3};
                     const program={sourceDir:directory,entryModule:"fixture.md",entry:"finish",dependencies:{library:Deno.env.get("JANET_PATH")}};
                     const signal=new AbortController();const output=`${directory}/sdk-detached`;
                     const events=spawn({program,limits,command:[executable],signal:signal.signal},new Uint8Array([42]),new TextEncoder().encode(output));
@@ -153,16 +164,24 @@ jobs:
                     while(Date.now()<deadline){try{assert.deepEqual(await Deno.readFile(output),new Uint8Array([42]));break}catch{await new Promise(r=>setTimeout(r,10))}}
                     assert.deepEqual(await Deno.readFile(output),new Uint8Array([42]));
                     for(const wire of [
-                      "{\"version\":1,\"type\":\"ready\"}\n{\"version\":1,\"type\":\"emit\",\"output\":\"YQ==\",\"out\\u0070ut\":\"Yg==\"}\n",
-                      "{\"version\":1,\"type\":\"ready\"}\n{\"version\":1,\"type\":\"result\",\"output\":\"YR==\"}\n",
-                      "{\"version\":1,\"type\":\"ready\"}\n{\"version\":1,\"type\":\"result\",\"output\":\"YQ==\"}\n{}\n",
-                      "{\"version\":1,\"type\":\"result\",\"output\":\"YQ==\"}\n",
-                      "{\"version\":1,\"type\":\"ready\"}\n"]){
+                      "{\"version\":2,\"type\":\"ready\"}\n{\"version\":2,\"type\":\"result\",\"output\":\"Y==\"}\n",
+                      "{\"version\":2,\"type\":\"ready\"}\n{\"version\":2,\"type\":\"result\",\"output\":\"YQ==\"}\n{}\n",
+                      "{\"version\":2,\"type\":\"result\",\"output\":\"YQ==\"}\n",
+                      "{\"version\":2,\"type\":\"ready\"}\n"]){
                       const command=[Deno.execPath(),"eval",`await new Promise(r=>setTimeout(r,20));await Deno.stdout.write(new TextEncoder().encode(${JSON.stringify(wire)}));`];
                       await assert.rejects(async()=>{for await(const _ of spawn({program,limits,command},new Uint8Array(),new Uint8Array())){}},
                         e=>e instanceof AgentError&&e.code==="InvalidProtocol");
                     }
-                  ''',directory,executable],check=True,timeout=30)
+                    const ready=JSON.stringify({version:2,type:"ready"})+"\n";
+                    const segment=JSON.stringify({version:2,type:"emit",output:"YR==",extra:"😀"})+"\n";
+                    const result="{\"version\":2,\"type\":\"result\",\"output\":\"Yg==\",\"out\\u0070ut\":\"YR==\"}\n";
+                    const command=[Deno.execPath(),"eval",`const write=async s=>{await Deno.stdout.write(s);await new Promise(r=>setTimeout(r,2))};await write(new TextEncoder().encode(${JSON.stringify(ready)}));const bytes=new TextEncoder().encode(${JSON.stringify(segment)});for(let i=1;i<bytes.length;i++){await write(bytes.subarray(0,i));await write(bytes.subarray(i))}for(const byte of new TextEncoder().encode(${JSON.stringify(result)}))await write(new Uint8Array([byte]));`];
+                    let count=0;
+                    for await(const event of spawn({program,limits,command},new Uint8Array(),new Uint8Array())) {
+                      assert.deepEqual(event.output,new Uint8Array([97]));count++;
+                    }
+                    assert.equal(count,new TextEncoder().encode(segment).length);
+                  ''',directory,executable],check=True,timeout=60)
       - name: Export toolchain
         if: inputs.toolchain != ''
         run: tar --exclude=.cache -cf "$RUNNER_TEMP/toolchain.tar" -C "$RUNNER_TEMP" janet

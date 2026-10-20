@@ -63,7 +63,7 @@ for await (
   const event of spawn(
     {
       program: { sourceDir: "/runtime/example", entryModule: "main.janet", entry: "answer" },
-      limits: { frameBytes: 1048576, depth: 32, admissionSeconds: 5 },
+      limits: { frameBytes: 1048576, admissionSeconds: 5 },
     },
     new Uint8Array(),
     new Uint8Array(),
@@ -87,7 +87,7 @@ The trusted Janet SDK exposes `pa/spawn` and `pa/await`:
 (import portable-agents/src/pa)
 (def handle
   (pa/spawn program "input" "configuration"
-            {:limits {"frameBytes" 1048576 "depth" 32 "admissionSeconds" 5}}))
+            {:limits {"frameBytes" 1048576 "admissionSeconds" 5}}))
 (pa/await handle)
 ```
 
@@ -124,33 +124,35 @@ protocol stdout; ordinary Janet output is routed to stderr.
 ## Wire contract
 
 ```sh
-agent spawn FRAME-BYTES DEPTH ADMISSION-SECONDS
+agent spawn FRAME-BYTES ADMISSION-SECONDS
 ```
 
 Stdin is one LF-terminated JSON request followed by EOF:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "program": { "sourceDir": "/runtime/example", "entryModule": "main.janet", "entry": "answer" },
   "input": "",
   "config": ""
 }
 ```
 
-Byte fields use canonical Base64. Bounds are explicit: complete frame bytes, JSON container depth and bootstrap
-acceptance time. Output reserves CRLF room. Capacity bounds do not limit application computation.
+Byte fields use Base64. Bounds are explicit: complete frame bytes and bootstrap acceptance time. Output reserves CRLF
+room. Capacity bounds do not limit application computation. Native JSON codecs own syntax and nesting limits; PA
+validates the fields it consumes, not canonical encodings or unknown fields.
 
 Stdout uses the same NDJSON framing. A `ready` record acknowledges acceptance and is consumed internally by SDKs. Other
 records contain `output` (emit/result), `stage` (log), `message` (traceback), or `code`/`message` (error). Exactly one
 result/error, EOF and successful process exit are required. Terminal bytes are withheld until validated.
 
-UTF-8, fields, Base64 and duplicate/trailing terminals are checked. Janet also rejects duplicate JSON keys. There is no
-second socket or length-header protocol.
+UTF-8, consumed fields, Base64 and duplicate/trailing terminals are checked. Duplicate JSON keys use the codec's
+last-value behavior; noncanonical Base64 is accepted. Janet uses native Spork JSON syntax, while TypeScript uses
+JSON.parse. There is no second socket or length-header protocol. Version 2 requires matching native binaries and SDKs.
 
-## Native Base64 license
+## Native codec license
 
-The executable embeds Spork's Base64 codec, Copyright (c) 2024 Janet contributors.
+The executable embeds Spork's JSON, UTF-8 and Base64 codecs, Copyright (c) 2024 Janet contributors.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 documentation files (the "Software"), to deal in the Software without restriction, including without limitation the

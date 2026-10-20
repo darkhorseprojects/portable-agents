@@ -4,10 +4,10 @@
 
 (var- observing true)
 (var- accepted false)
+(unless (index-of (os/which) [:windows :mingw]) (os/sigaction :pipe (fn [])))
 
 (defn- publish [frame]
   (def bytes (string (p/json frame) "\n"))
-  (assert (<= (+ 1 (length bytes)) ((dyn :pa/limits) "frameBytes")) "TransportLimit")
   (when observing
     (try (do (file/write stdout bytes) (file/flush stdout)) ([err] (set observing false)))))
 
@@ -18,27 +18,23 @@
 (defn- log [stage]
   (publish (p/frame "log" "stage" stage)))
 
-(defn- module-env [] (make-env (dyn :pa/environment)))
-
 (defn execute [request limits executable]
-  (set observing true)
-  (set accepted false)
-  (unless (index-of (os/which) [:windows :mingw]) (os/sigaction :pipe (fn [])))
   (with-dyns [:pa/limits limits]
     (try
       (do
+        (def input (p/base64 (request "input") true))
+        (def config (p/base64 (request "config") true))
         (def base (make-env))
         (put base :pa/executable executable)
         (put base :pa/limits limits)
         (put base :pa/program (request "program"))
-        (put base :pa/environment base)
         (put base *syspath* (os/realpath ((request "program") "sourceDir")))
         (each [name root] (pairs (get (request "program") "dependencies" {}))
           (put base (keyword name) (os/realpath root)))
         (put base 'pa/emit @{:value emit :private true})
         (put base 'pa/log @{:value log :private true})
         (put module/loaders :markdown md/load)
-        (put base *module-make-env* module-env)
+        (put base *module-make-env* (partial make-env base))
         (with-env base
           (with-dyns [:out stderr :err stderr]
             (module/add-paths ".md" :markdown)
@@ -52,7 +48,7 @@
             (publish (p/frame "ready"))
             (def output (with-env env
               (with-dyns [:out stderr :err stderr]
-                (target (p/base64 (request "input") true) (p/base64 (request "config") true)))))
+                (target input config))))
             (publish (p/frame "result" "output" (p/base64 output))))))
       ([err fiber]
         (def trace @"")
@@ -64,10 +60,9 @@
   (os/exit 0 true))
 
 (defn main [executable operation & args]
-  (assert (and (index-of operation ["spawn" "execute"]) (= 3 (length args)))
-          "usage: agent spawn FRAME-BYTES DEPTH ADMISSION-SECONDS")
-  (def limits (p/limits (table ;(interleave ["frameBytes" "depth" "admissionSeconds"] (map scan-number args)))))
-  (unless (index-of (os/which) [:windows :mingw]) (os/sigaction :pipe (fn [])))
+  (assert (and (index-of operation ["spawn" "execute"]) (= 2 (length args)))
+          "usage: agent spawn FRAME-BYTES ADMISSION-SECONDS")
+  (def limits (p/limits (table ;(interleave ["frameBytes" "admissionSeconds"] (map scan-number args)))))
   (when-let [library (os/getenv "JANET_PATH")] (module/add-syspath library))
   (def path (host/executable))
   (when (= operation "execute") (host/detach))
@@ -81,7 +76,7 @@
         (def command (get-in request ["program" "command"]))
         (def child (os/spawn
           (if command
-            [;command "-e" "(import portable-agents/src/main) (import portable-agents/src/protocol :as p) (def limits (p/limits (table ;(interleave [\"frameBytes\" \"depth\" \"admissionSeconds\"] (map scan-number (tuple/slice (dyn :args) 2)))))) (with-dyns [:pa/limits limits] (main/execute (p/request (p/receive (p/reader stdin))) limits (os/getenv \"PA_EXECUTABLE\")))" ;args]
+            [;command "-e" "(import portable-agents/src/main) (import portable-agents/src/protocol :as p) (def limits (p/limits (table ;(interleave [\"frameBytes\" \"admissionSeconds\"] (map scan-number (tuple/slice (dyn :args) 2)))))) (with-dyns [:pa/limits limits] (main/execute (p/request (p/receive (p/reader stdin))) limits (os/getenv \"PA_EXECUTABLE\")))" ;args]
             [path "execute" ;args])
           :pde (merge (os/environ) {"PA_EXECUTABLE" path
                                   :in :pipe :out :pipe :err stderr})))

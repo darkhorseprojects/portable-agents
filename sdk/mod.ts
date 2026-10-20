@@ -1,4 +1,4 @@
-/** Opaque-byte programs over Portable Agents protocol 1. @module */
+/** Opaque-byte programs over Portable Agents protocol 2. @module */
 import { spawn as spawnProcess } from "node:child_process";
 import process from "node:process";
 import { once } from "node:events";
@@ -16,7 +16,7 @@ export interface Program {
 /** Invocation, process settings, and invoker-selected boundary bounds. */
 export interface Options {
   readonly program: Program;
-  readonly limits: Readonly<Record<"frameBytes" | "depth" | "admissionSeconds", number>>;
+  readonly limits: Readonly<Record<"frameBytes" | "admissionSeconds", number>>;
   readonly command?: readonly string[];
   readonly cwd?: string;
   readonly environment?: Readonly<Record<string, string>>;
@@ -25,7 +25,7 @@ export interface Options {
 
 /** Ordered complete events; failures throw AgentError. */
 export type Event =
-  & { readonly version: 1 }
+  & { readonly version: 2 }
   & (
     | { readonly type: "emit"; readonly output: Uint8Array }
     | { readonly type: "result"; readonly output: Uint8Array }
@@ -41,7 +41,6 @@ export class AgentError extends Error {
   }
 }
 
-const base64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=|[A-Za-z0-9+/][AQgw]==)?(?![\s\S])/;
 const fields = new Map<string, readonly string[]>([
   ["ready", []],
   ["emit", ["output"]],
@@ -62,14 +61,13 @@ export async function* spawn(
   let request: Uint8Array;
   try {
     if (
-      Object.keys(limits).length !== 3 || limits.depth < 2 ||
       !Number.isFinite(limits.admissionSeconds) || limits.admissionSeconds <= 0 ||
-      [limits.frameBytes, limits.depth].some((n) => !Number.isInteger(n) || n <= 0 || n > 0x7fffffff)
+      !Number.isInteger(limits.frameBytes) || limits.frameBytes <= 0 || limits.frameBytes > 0x7fffffff
     ) throw new Error("Invalid boundary limits");
     if ((input.length + config.length) * 4 / 3 > limits.frameBytes) throw new Error("Request exceeds bound");
     request = new TextEncoder().encode(
       JSON.stringify({
-        version: 1,
+        version: 2,
         program: options.program,
         input: input.toBase64(),
         config: config.toBase64(),
@@ -86,7 +84,7 @@ export async function* spawn(
     child = spawnProcess(command, [
       ...args,
       "execute",
-      ...[limits.frameBytes, limits.depth, limits.admissionSeconds].map(String),
+      ...[limits.frameBytes, limits.admissionSeconds].map(String),
     ], {
       cwd: options.cwd,
       env: { ...process.env, ...options.environment },
@@ -109,7 +107,7 @@ export async function* spawn(
       new AgentError("AdmissionTimeout", "Execution may have accepted the request"),
     ), limits.admissionSeconds * 1000);
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-  const pending = new Uint8Array(new ArrayBuffer(0, { maxByteLength: limits.frameBytes - 1 }));
+  let pending = "";
   let used = 0;
   let terminal: Event | AgentError | undefined;
   let admitted = false;
@@ -121,33 +119,18 @@ export async function* spawn(
           if (terminal) throw new Error("Trailing terminal bytes");
           const index = chunk.indexOf(10, offset);
           const end = index === -1 ? chunk.length : index;
-          const size = used + end - offset;
-          if (size >= limits.frameBytes) throw new Error("Frame exceeds bound");
-          let bytes: Uint8Array;
-          if (!used && index !== -1) bytes = chunk.subarray(offset, end);
-          else {
-            if (size > pending.length) {
-              pending.buffer.resize(Math.min(limits.frameBytes - 1, Math.max(size, pending.length * 2)));
-            }
-            pending.set(chunk.subarray(offset, end), used);
-            used = size;
-            if (index === -1) break;
-            bytes = pending.subarray(0, used);
-          }
-          used = 0;
+          used += end - offset;
+          if (used >= limits.frameBytes) throw new Error("Frame exceeds bound");
+          pending += decoder.decode(chunk.subarray(offset, end), { stream: index === -1 });
           offset = end + 1;
-          const line = decoder.decode(bytes);
-          if (!line) throw new Error("Empty frame");
-          const raw = JSON.parse(line);
-          const keys = Object.keys(raw ?? {});
-          let count = 0;
-          for (const match of line.matchAll(/"(?:[^"\\]|\\.)*"([ \t\r]*:)?/g)) if (match[1]) count++;
-          if (count !== keys.length) throw new Error("Duplicate object key");
+          if (index === -1) break;
+          const raw = JSON.parse(pending);
+          pending = "";
+          used = 0;
           const required = fields.get(raw?.type);
           if (
-            raw?.version !== 1 || !required || keys.length !== required.length + 2 ||
-            !keys.includes("version") || !keys.includes("type") ||
-            required.some((key) => !keys.includes(key) || typeof raw[key] !== "string" || !raw[key].isWellFormed())
+            raw?.version !== 2 || !required ||
+            required.some((key) => typeof raw[key] !== "string" || !raw[key].isWellFormed())
           ) throw new Error("Invalid frame fields");
           if (raw.type === "ready") {
             if (admitted) throw new Error("Duplicate admission");
@@ -156,7 +139,6 @@ export async function* spawn(
           } else {
             if (!admitted && !["log", "traceback", "error"].includes(raw.type)) throw new Error("Missing admission");
             if ("output" in raw) {
-              if (!base64.test(raw.output)) throw new Error("Noncanonical Base64");
               raw.output = Uint8Array.fromBase64(raw.output);
             }
             if (raw.type === "error") terminal = new AgentError(raw.code, raw.message);
