@@ -5,7 +5,9 @@ failures throw `AgentError` with a stable `code`. An optional abort signal inter
 without killing accepted execution. Breaking iteration also closes observation.
 
 Janet observers and the CLI share admission and terminal validation in the protocol reader. Repeated Janet awaits still
-return the cached outcome.
+return the cached outcome. The collector, not an arbitrary awaiter, owns completion-channel closure, including
+concurrent awaits. TypeScript duplicate-key validation counts lexical keys against decoded own keys without a second key
+decoder; strict framing, canonical Base64, EOF and exit checks remain.
 
 Protocol version remains 1. Install matching native binaries and Janet sources. The SDK API change has no compatibility
 adapter.

@@ -4,7 +4,6 @@
 
 (defn await [handle]
   (ev/take (handle :done))
-  (ev/chan-close (handle :done))
   (def [ok value] (handle :outcome))
   (if ok value (error value)))
 
@@ -19,7 +18,7 @@
     (def exited (ev/chan))
     (ev/go (fn [] (os/proc-wait process)) nil exited)
     (def reader (p/reader (process :out) true))
-    (def handle @{:done (ev/chan 1)})
+    (def handle @{:done (ev/chan)})
     (var admitted false)
     (defer (unless admitted (ev/close (process :out)))
       (defer (ev/close (process :in))
@@ -30,19 +29,20 @@
         (assert (= "ready" (ready "type")) (get ready "message" "ProcessFailure")))
       (set admitted true)
       (ev/go (fn []
-        (with-dyns [:pa/limits limits]
-          (defer (ev/close (process :out))
-            (put handle :outcome
-                 (try
-                   (do
-                     (var frame nil)
-                     (while (set frame (p/receive reader))
-                       (when (and (= "emit" (frame "type")) (options :emit))
-                         ((options :emit) (p/base64 (frame "output") true))))
-                     (def terminal (reader :terminal))
-                     (ev/take exited)
-                     (assert (= 0 (process :return-code)) "ProcessFailure")
-                     (if (= "result" (terminal "type")) [true (p/base64 (terminal "output") true)]
-                       [false (terminal "message")]))
-                   ([err] [false err])))))) nil (handle :done))
+        (defer (ev/chan-close (handle :done))
+          (with-dyns [:pa/limits limits]
+            (defer (ev/close (process :out))
+              (put handle :outcome
+                   (try
+                     (do
+                       (var frame nil)
+                       (while (set frame (p/receive reader))
+                         (when (and (= "emit" (frame "type")) (options :emit))
+                           ((options :emit) (p/base64 (frame "output") true))))
+                       (def terminal (reader :terminal))
+                       (ev/take exited)
+                       (assert (= 0 (process :return-code)) "ProcessFailure")
+                       (if (= "result" (terminal "type")) [true (p/base64 (terminal "output") true)]
+                         [false (terminal "message")]))
+                     ([err] [false err]))))))))
       handle)))

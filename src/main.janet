@@ -6,7 +6,7 @@
 (var- accepted false)
 
 (defn- publish [frame]
-  (def bytes (string (p/json (p/event frame)) "\n"))
+  (def bytes (string (p/json frame) "\n"))
   (assert (<= (+ 1 (length bytes)) ((dyn :pa/limits) "frameBytes")) "TransportLimit")
   (when observing
     (try (do (file/write stdout bytes) (file/flush stdout)) ([err] (set observing false)))))

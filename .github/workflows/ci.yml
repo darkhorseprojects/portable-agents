@@ -94,6 +94,75 @@ jobs:
           git remote set-url origin https://github.com/darkhorseprojects/portable-agents.git
           jpm deps
           jpm install
+      - name: Exercise native boundary
+        working-directory: portable-agents
+        shell: python
+        env:
+          CHECK_SDK: ${{ !inputs.toolchain && matrix.id == 'linux-x86_64' }}
+        run: |
+          import base64, json, os, pathlib, shutil, subprocess, tempfile, time
+          executable = str(pathlib.Path("build/agent.exe" if os.name == "nt" else "build/agent").resolve())
+          subprocess.run([shutil.which("janet"), "-e", r'''
+            (import ./src/protocol :as p)
+            (with-dyns [:pa/limits {"frameBytes" 4096 "depth" 8 "admissionSeconds" 2}]
+              (each value [`{"a":1,"\u0061":2}` `01` `[1,]` `1e999` `"\ud800"`]
+                (assert (= :invalid (try (p/json value true) ([err] :invalid)))))
+              (assert (= :json-null (p/json "null" true))))'''], check=True)
+          with tempfile.TemporaryDirectory() as directory:
+              path = pathlib.Path(directory)
+              source = '''(module/add-syspath (dyn :library))
+          (import portable-agents/src/pa)
+          (defn echo [input config] (print "stderr-only") (pa/emit "segment") input)
+          (defn finish [input config] (pa/emit "accepted") (ev/sleep 0.3) (spit config input) input)
+          (defn nested [input config]
+            (def h (pa/spawn (merge (dyn :pa/program) {"entry" "finish"}) input config {:limits (dyn :pa/limits)}))
+            (def xs (ev/gather (pa/await h) (pa/await h)))
+            (assert (= (xs 0) (xs 1) (pa/await h))) (pa/await h))'''
+              (path/"fixture.md").write_text("# Fixture\n\n```janet\n"+source+"\n```\n")
+              program = dict(sourceDir=directory, entryModule="fixture.md", dependencies={"library":os.environ["JANET_PATH"]})
+              def wire(entry, config=b"", command=None):
+                  target = dict(program, entry=entry)
+                  if command: target["command"] = command
+                  return (json.dumps(dict(version=1, program=target, input=base64.b64encode(b"bytes\0\xff").decode(),
+                      config=base64.b64encode(config).decode()))+"\n").encode()
+              for entry, command in [("echo", None), ("echo", [shutil.which("janet")]), ("nested", None)]:
+                  process = subprocess.run([executable,"spawn","1048576","32","3"],
+                      input=wire(entry,str(path/"nested").encode(),command), capture_output=True, timeout=15)
+                  frames = [json.loads(line) for line in process.stdout.splitlines()]
+                  assert process.returncode == 0 and frames[-1]["type"] == "result", (frames,process.stderr)
+                  assert base64.b64decode(frames[-1]["output"]) == b"bytes\0\xff"
+              process = subprocess.Popen([executable,"spawn","1048576","32","3"],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+              process.stdin.write(wire("finish",str(path/"detached").encode()));process.stdin.close()
+              assert json.loads(process.stdout.readline())["type"] == "ready"
+              process.kill();process.wait();process.stdout.close();process.stderr.close()
+              deadline = time.monotonic()+10
+              while not (path/"detached").exists() and time.monotonic()<deadline: time.sleep(.01)
+              assert (path/"detached").read_bytes() == b"bytes\0\xff"
+              if os.environ["CHECK_SDK"] == "true":
+                  subprocess.run(["deno","eval",r'''
+                    import assert from "node:assert/strict";
+                    import {spawn,AgentError} from "./sdk/mod.ts";
+                    const [directory,executable]=Deno.args;
+                    const limits={frameBytes:1048576,depth:32,admissionSeconds:3};
+                    const program={sourceDir:directory,entryModule:"fixture.md",entry:"finish",dependencies:{library:Deno.env.get("JANET_PATH")}};
+                    const signal=new AbortController();const output=`${directory}/sdk-detached`;
+                    const events=spawn({program,limits,command:[executable],signal:signal.signal},new Uint8Array([42]),new TextEncoder().encode(output));
+                    assert.equal((await events.next()).value.type,"emit");signal.abort();
+                    await assert.rejects(events.next(),e=>e instanceof AgentError&&e.code==="ObservationCancelled");
+                    const deadline=Date.now()+10000;
+                    while(Date.now()<deadline){try{assert.deepEqual(await Deno.readFile(output),new Uint8Array([42]));break}catch{await new Promise(r=>setTimeout(r,10))}}
+                    assert.deepEqual(await Deno.readFile(output),new Uint8Array([42]));
+                    for(const wire of [
+                      "{\"version\":1,\"type\":\"ready\"}\n{\"version\":1,\"type\":\"emit\",\"output\":\"YQ==\",\"out\\u0070ut\":\"Yg==\"}\n",
+                      "{\"version\":1,\"type\":\"ready\"}\n{\"version\":1,\"type\":\"result\",\"output\":\"YR==\"}\n",
+                      "{\"version\":1,\"type\":\"ready\"}\n{\"version\":1,\"type\":\"result\",\"output\":\"YQ==\"}\n{}\n",
+                      "{\"version\":1,\"type\":\"result\",\"output\":\"YQ==\"}\n",
+                      "{\"version\":1,\"type\":\"ready\"}\n"]){
+                      const command=[Deno.execPath(),"eval",`await new Promise(r=>setTimeout(r,20));await Deno.stdout.write(new TextEncoder().encode(${JSON.stringify(wire)}));`];
+                      await assert.rejects(async()=>{for await(const _ of spawn({program,limits,command},new Uint8Array(),new Uint8Array())){}},
+                        e=>e instanceof AgentError&&e.code==="InvalidProtocol");
+                    }
+                  ''',directory,executable],check=True,timeout=30)
       - name: Export toolchain
         if: inputs.toolchain != ''
         run: tar --exclude=.cache -cf "$RUNNER_TEMP/toolchain.tar" -C "$RUNNER_TEMP" janet

@@ -139,18 +139,15 @@ export async function* spawn(
           const line = decoder.decode(bytes);
           if (!line) throw new Error("Empty frame");
           const raw = JSON.parse(line);
-          const keys = new Set<string>();
-          for (const match of line.matchAll(/"(?:[^"\\]|\\.)*"([ \t\r]*:)?/g)) {
-            if (!match[1]) continue;
-            const key: string = JSON.parse(match[0].slice(0, -match[1].length));
-            if (keys.has(key)) throw new Error("Duplicate object key");
-            keys.add(key);
-          }
+          const keys = Object.keys(raw ?? {});
+          let count = 0;
+          for (const match of line.matchAll(/"(?:[^"\\]|\\.)*"([ \t\r]*:)?/g)) if (match[1]) count++;
+          if (count !== keys.length) throw new Error("Duplicate object key");
           const required = fields.get(raw?.type);
           if (
-            raw?.version !== 1 || !required || keys.size !== required.length + 2 ||
-            !keys.has("version") || !keys.has("type") ||
-            required.some((key) => !keys.has(key) || typeof raw[key] !== "string" || !raw[key].isWellFormed())
+            raw?.version !== 1 || !required || keys.length !== required.length + 2 ||
+            !keys.includes("version") || !keys.includes("type") ||
+            required.some((key) => !keys.includes(key) || typeof raw[key] !== "string" || !raw[key].isWellFormed())
           ) throw new Error("Invalid frame fields");
           if (raw.type === "ready") {
             if (admitted) throw new Error("Duplicate admission");
