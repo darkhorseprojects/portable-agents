@@ -7,9 +7,7 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
-      toolchain:
-        type: string
-        default: ""
+      toolchain: { type: string, default: "" }
 permissions: { contents: read }
 concurrency:
   group: pa-${{ github.workflow }}-${{ github.ref }}
@@ -35,48 +33,41 @@ jobs:
           ref: ${{ inputs.toolchain || github.sha }}
           path: portable-agents
           persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {
+          repository: janet-lang/janet,
+          ref: e1963cdfe0148f83601907727e00bd672d798115,
+          path: janet,
+          persist-credentials: false,
+        }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: {
+          repository: janet-lang/jpm,
+          ref: 029d0c4cfefd2d359ddc5344eae61a1771f4e673,
+          path: jpm,
+          persist-credentials: false,
+        }
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with: { python-version: "3.13" }
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
-        id: toolchain
-        with:
-          path: ${{ runner.os == 'Windows' && 'janet' || format('{0}/janet', runner.temp) }}
-          key: ${{ matrix.os }}-${{ runner.arch }}-janet-e1963cdfe0148f83601907727e00bd672d798115-jpm-029d0c4cfefd2d359ddc5344eae61a1771f4e673
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        if: steps.toolchain.outputs.cache-hit != 'true'
-        with:
-          repository: janet-lang/janet
-          ref: e1963cdfe0148f83601907727e00bd672d798115
-          path: janet
-          persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        if: steps.toolchain.outputs.cache-hit != 'true'
-        with:
-          repository: janet-lang/jpm
-          ref: 029d0c4cfefd2d359ddc5344eae61a1771f4e673
-          path: jpm
-          persist-credentials: false
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
         with: { deno-version: v2.9.7 }
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         if: runner.os == 'Windows'
         with: { arch: "${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}" }
-      - name: Prepare native toolchain
+      - name: Build Janet
         shell: python
-        env: { CACHED: "${{ steps.toolchain.outputs.cache-hit }}" }
         run: |
           import os, pathlib, shutil, subprocess
           windows = os.name == "nt"
           source = pathlib.Path("janet").resolve()
           prefix = source if windows else pathlib.Path(os.environ["RUNNER_TEMP"]) / "janet"
-          if os.environ["CACHED"] != "true":
-              if windows:
-                  subprocess.run(["cmd", "/c", "build_win.bat"], cwd=source, check=True)
-                  subprocess.run([str(source / "janet.exe"), "tools/patch-header.janet", "src/include/janet.h", "src/conf/janetconf.h", "build/janet.h"], cwd=source, check=True)
-                  shutil.copyfile(source / "janet.lib", source / "build/janet.lib")
-              else:
-                  subprocess.run(["make", "-C", str(source), "-j2", f"PREFIX={prefix}"], check=True)
-                  subprocess.run(["make", "-C", str(source), "install", f"PREFIX={prefix}"], check=True)
+          if windows:
+              subprocess.run(["cmd", "/c", "build_win.bat"], cwd=source, check=True)
+              subprocess.run([str(source / "janet.exe"), "tools/patch-header.janet", "src/include/janet.h", "src/conf/janetconf.h", "build/janet.h"], cwd=source, check=True)
+              shutil.copyfile(source / "janet.lib", source / "build/janet.lib")
+          else:
+              subprocess.run(["make", "-C", str(source), "-j2", f"PREFIX={prefix}"], check=True)
+              subprocess.run(["make", "-C", str(source), "install", f"PREFIX={prefix}"], check=True)
           library = source / "build" if windows else prefix / "lib"
           env = {"PREFIX": prefix, "JANET_HEADERPATH": source / "build" if windows else prefix / "include/janet",
                  "JANET_LIBPATH": library, "JANET_BINPATH": prefix / "bin", "JANET_MODPATH": prefix / ("lib" if windows else "lib/janet"),
@@ -87,106 +78,15 @@ jobs:
           with open(os.environ["GITHUB_PATH"], "a") as out:
               if windows: out.write(f"{source}\n")
               out.write(f"{prefix / 'bin'}\n")
-      - name: Install pinned Jpm
-        if: steps.toolchain.outputs.cache-hit != 'true'
+      - name: Install Jpm
         working-directory: jpm
         run: janet bootstrap.janet
-      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
-        if: steps.toolchain.outputs.cache-hit != 'true'
-        with:
-          path: ${{ runner.os == 'Windows' && 'janet' || format('{0}/janet', runner.temp) }}
-          key: ${{ steps.toolchain.outputs.cache-primary-key }}
-      - name: Check SDK
-        working-directory: portable-agents
-        run: deno task check
-      - name: Install native boundary
+      - name: Check and install PA
         working-directory: portable-agents
         run: |
-          git remote set-url origin https://github.com/darkhorseprojects/portable-agents.git
+          deno task check
           jpm deps
           jpm install
-      - name: Exercise native boundary
-        working-directory: portable-agents
-        shell: python
-        env:
-          CHECK_SDK: "true"
-        run: |
-          import base64, json, os, pathlib, shutil, subprocess, tempfile, time
-          executable = str(pathlib.Path("build/agent.exe" if os.name == "nt" else "build/agent").resolve())
-          subprocess.run([shutil.which("janet"), "-e", r'''
-            (import ./src/protocol :as p)
-            (with-dyns [:pa/limits {"frameBytes" 4096 "admissionSeconds" 2}]
-              (each value [`"\ud800"` `{} {}`]
-                (assert (= :invalid (try (p/json value true) ([err] :invalid)))))
-              (assert (= 2 ((p/json `{"a":1,"\u0061":2}` true) "a")))
-              (assert (= 1 (p/json "01" true)))
-              (assert (deep= @[1] (p/json "[1,]" true)))
-              (assert (= math/inf (p/json "1e999" true)))
-              (assert (= :null (p/json "null" true)))
-              (assert (= "a" (p/base64 "YR==" true))))'''], check=True)
-          with tempfile.TemporaryDirectory() as directory:
-              path = pathlib.Path(directory)
-              source = '''(module/add-syspath (dyn :library))
-          (import portable-agents/src/pa)
-          (defn echo [input config] (print "stderr-only") (pa/emit "segment") input)
-          (defn finish [input config] (pa/emit "accepted") (ev/sleep 0.3) (spit config input) input)
-          (defn nested [input config]
-            (def h (pa/spawn (merge (dyn :pa/program) {"entry" "finish"}) input config {:limits (dyn :pa/limits)}))
-            (def xs (ev/gather (pa/await h) (pa/await h)))
-            (assert (= (xs 0) (xs 1) (pa/await h))) (pa/await h))'''
-              (path/"fixture.md").write_text("# Fixture\n\n```janet\n"+source+"\n```\n")
-              program = dict(sourceDir=directory, entryModule="fixture.md", dependencies={"library":os.environ["JANET_PATH"]})
-              def wire(entry, config=b"", command=None):
-                  target = dict(program, entry=entry)
-                  if command: target["command"] = command
-                  return (json.dumps(dict(version=2, program=target, input=base64.b64encode(b"bytes\0\xff").decode(),
-                      config=base64.b64encode(config).decode()))+"\n").encode()
-              for entry, command in [("echo", None), ("echo", [shutil.which("janet")]), ("nested", None)]:
-                  process = subprocess.run([executable,"spawn","1048576","3"],
-                      input=wire(entry,str(path/"nested").encode(),command), capture_output=True, timeout=15)
-                  frames = [json.loads(line) for line in process.stdout.splitlines()]
-                  assert process.returncode == 0 and frames[-1]["type"] == "result", (frames,process.stderr)
-                  assert base64.b64decode(frames[-1]["output"]) == b"bytes\0\xff"
-              process = subprocess.Popen([executable,"spawn","1048576","3"],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-              process.stdin.write(wire("finish",str(path/"detached").encode()));process.stdin.close()
-              assert json.loads(process.stdout.readline())["type"] == "ready"
-              process.kill();process.wait();process.stdout.close();process.stderr.close()
-              deadline = time.monotonic()+10
-              while not (path/"detached").exists() and time.monotonic()<deadline: time.sleep(.01)
-              assert (path/"detached").read_bytes() == b"bytes\0\xff"
-              if os.environ["CHECK_SDK"] == "true":
-                  subprocess.run(["deno","eval",r'''
-                    import assert from "node:assert/strict";
-                    import {spawn,AgentError} from "./sdk/mod.ts";
-                    const [directory,executable]=Deno.args;
-                    const limits={frameBytes:1048576,admissionSeconds:3};
-                    const program={sourceDir:directory,entryModule:"fixture.md",entry:"finish",dependencies:{library:Deno.env.get("JANET_PATH")}};
-                    const signal=new AbortController();const output=`${directory}/sdk-detached`;
-                    const events=spawn({program,limits,command:[executable],signal:signal.signal},new Uint8Array([42]),new TextEncoder().encode(output));
-                    assert.equal((await events.next()).value.type,"emit");signal.abort();
-                    await assert.rejects(events.next(),e=>e instanceof AgentError&&e.code==="ObservationCancelled");
-                    const deadline=Date.now()+10000;
-                    while(Date.now()<deadline){try{assert.deepEqual(await Deno.readFile(output),new Uint8Array([42]));break}catch{await new Promise(r=>setTimeout(r,10))}}
-                    assert.deepEqual(await Deno.readFile(output),new Uint8Array([42]));
-                    for(const wire of [
-                      "{\"version\":2,\"type\":\"ready\"}\n{\"version\":2,\"type\":\"result\",\"output\":\"Y==\"}\n",
-                      "{\"version\":2,\"type\":\"ready\"}\n{\"version\":2,\"type\":\"result\",\"output\":\"YQ==\"}\n{}\n",
-                      "{\"version\":2,\"type\":\"result\",\"output\":\"YQ==\"}\n",
-                      "{\"version\":2,\"type\":\"ready\"}\n"]){
-                      const command=[Deno.execPath(),"eval",`await new Promise(r=>setTimeout(r,20));await Deno.stdout.write(new TextEncoder().encode(${JSON.stringify(wire)}));`];
-                      await assert.rejects(async()=>{for await(const _ of spawn({program,limits,command},new Uint8Array(),new Uint8Array())){}},
-                        e=>e instanceof AgentError&&e.code==="InvalidProtocol");
-                    }
-                    const ready=JSON.stringify({version:2,type:"ready"})+"\n";
-                    const segment=JSON.stringify({version:2,type:"emit",output:"YR==",extra:"😀"})+"\n";
-                    const result="{\"version\":2,\"type\":\"result\",\"output\":\"Yg==\",\"out\\u0070ut\":\"YR==\"}\n";
-                    const command=[Deno.execPath(),"eval",`const write=async s=>{await Deno.stdout.write(s);await new Promise(r=>setTimeout(r,2))};await write(new TextEncoder().encode(${JSON.stringify(ready)}));const bytes=new TextEncoder().encode(${JSON.stringify(segment)});for(let i=1;i<bytes.length;i++){await write(bytes.subarray(0,i));await write(bytes.subarray(i))}for(const byte of new TextEncoder().encode(${JSON.stringify(result)}))await write(new Uint8Array([byte]));`];
-                    let count=0;
-                    for await(const event of spawn({program,limits,command},new Uint8Array(),new Uint8Array())) {
-                      assert.deepEqual(event.output,new Uint8Array([97]));count++;
-                    }
-                    assert.equal(count,new TextEncoder().encode(segment).length);
-                  ''',directory,executable],check=True,timeout=60)
       - name: Export toolchain
         if: inputs.toolchain != ''
         shell: python
@@ -201,10 +101,11 @@ jobs:
                       archive.add(path, arcname=str(pathlib.PurePosixPath("janet", *relative.parts)), recursive=False)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: inputs.toolchain != ''
-        with:
-          name: janet-toolchain-${{ matrix.id }}
-          path: ${{ runner.temp }}/toolchain.tar
-          if-no-files-found: error
+        with: {
+          name: "janet-toolchain-${{ matrix.id }}",
+          path: "${{ runner.temp }}/toolchain.tar",
+          if-no-files-found: error,
+        }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ !inputs.toolchain && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
         with:

@@ -11,10 +11,10 @@
   (def limits (p/limits (options :limits)))
   (with-dyns [:pa/limits limits]
     (def request (p/request {"version" p/version "program" program "input" (p/base64 input)
-                            "config" (p/base64 config)}))
+                             "config" (p/base64 config)}))
     (def process (os/spawn [(dyn :pa/executable) "execute"
-                           ;(map |(string (limits $)) ["frameBytes" "admissionSeconds"])]
-                          :d {:in :pipe :out :pipe :err stderr}))
+                            ;(map |(string (limits $)) ["frameBytes" "admissionSeconds"])]
+                           :d {:in :pipe :out :pipe :err stderr}))
     (def exited (ev/chan))
     (ev/go (fn [] (os/proc-wait process)) nil exited)
     (def reader (p/reader (process :out) true))
@@ -25,24 +25,30 @@
         (p/send (process :in) request))
       (ev/with-deadline (limits "admissionSeconds")
         (var ready (p/receive reader))
-        (while (index-of (ready "type") ["traceback" "log"]) (set ready (p/receive reader)))
-        (assert (= "ready" (ready "type")) (get ready "message" "ProcessFailure")))
+        (while (= "diagnostic" (ready "type"))
+          (when (options :diagnostic) ((options :diagnostic) (ready "level")
+                                                             (tabseq [[key value] :in (pairs ready) :unless (index-of key ["version" "type" "level"])] (keyword key) value)))
+          (set ready (p/receive reader)))
+        (unless (= "ready" (ready "type"))
+          (error (tabseq [[key value] :in (pairs ready) :unless (index-of key ["version" "type"])] (keyword key) value))))
       (set admitted true)
       (ev/go (fn []
-        (defer (ev/chan-close (handle :done))
-          (with-dyns [:pa/limits limits]
-            (defer (ev/close (process :out))
-              (put handle :outcome
-                   (try
-                     (do
-                       (var frame nil)
-                       (while (set frame (p/receive reader))
-                         (when (and (= "emit" (frame "type")) (options :emit))
-                           ((options :emit) (p/base64 (frame "output") true))))
-                       (def terminal (reader :terminal))
-                       (ev/take exited)
-                       (assert (= 0 (process :return-code)) "ProcessFailure")
-                       (if (= "result" (terminal "type")) [true (p/base64 (terminal "output") true)]
-                         [false (terminal "message")]))
-                     ([err] [false err]))))))))
+               (defer (ev/chan-close (handle :done))
+                 (with-dyns [:pa/limits limits]
+                   (defer (ev/close (process :out))
+                     (put handle :outcome
+                          (try
+                            (do
+                              (var frame nil)
+                              (while (set frame (p/receive reader))
+                                (case (frame "type")
+                                  "emit" (when (options :emit) ((options :emit) (p/base64 (frame "output") true)))
+                                  "diagnostic" (when (options :diagnostic) ((options :diagnostic) (frame "level")
+                                                                                                  (tabseq [[key value] :in (pairs frame) :unless (index-of key ["version" "type" "level"])] (keyword key) value)))))
+                              (def terminal (reader :terminal))
+                              (ev/take exited)
+                              (assert (= 0 (process :return-code)) "ProcessFailure")
+                              (if (= "result" (terminal "type")) [true (p/base64 (terminal "output") true)]
+                                [false (tabseq [[key value] :in (pairs terminal) :unless (index-of key ["version" "type"])] (keyword key) value)]))
+                            ([err] [false err]))))))))
       handle)))

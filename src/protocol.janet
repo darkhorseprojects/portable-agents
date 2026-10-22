@@ -2,7 +2,7 @@
 (import spork/json :as native-json)
 (import spork/utf8 :as utf8)
 
-(def version 2)
+(def version 3)
 
 (defn limits [value]
   (assert (and (int? (value "frameBytes")) (<= 1 (value "frameBytes") 0x7fffffff)) "InvalidLimits")
@@ -44,10 +44,13 @@
 (defn frame [type & pairs] (table "version" version "type" type ;pairs))
 
 (defn event [value]
-  (def fields (or (get {"ready" [] "emit" ["output"] "result" ["output"] "log" ["stage"] "traceback" ["message"] "error" ["code" "message"]} (get value "type")) (error "InvalidProtocol")))
+  (def fields (or (get {"ready" [] "emit" ["output"] "result" ["output"] "diagnostic" ["level" "code" "message"] "error" ["code" "message"]} (get value "type")) (error "InvalidProtocol")))
   (assert (= version (value "version")) "InvalidProtocol")
   (each key fields (assert (string? (value key)) "InvalidProtocol"))
   (when (has-key? value "output") (base64 (value "output") true))
+  (when (has-key? value "detail") (assert (string? (value "detail")) "InvalidProtocol"))
+  (when (has-key? value "context") (assert (dictionary? (value "context")) "InvalidProtocol"))
+  (when (= "diagnostic" (value "type")) (assert (index-of (value "level") ["debug" "info" "warn"]) "InvalidProtocol"))
   value)
 
 (defn send [io value]
@@ -76,25 +79,16 @@
       (assert (not (state :terminal)) "InvalidProtocol")
       (case (value "type")
         "ready" (do (assert (not (state :ready)) "InvalidProtocol") (put state :ready true))
-        (assert (or (state :ready) (index-of (value "type") ["log" "traceback" "error"])) "InvalidProtocol"))
+        (assert (or (state :ready) (index-of (value "type") ["diagnostic" "error"])) "InvalidProtocol"))
       (when (index-of (value "type") ["result" "error"]) (put state :terminal value)))
     value))
 
 (defn diagnostic [type err & fields]
-  (def result (frame type "message" "" ;fields))
-  (when (and (= type "error") (not (has-key? result "code")))
-    (put result "code" (if (= err "ResourceLimit") err "ProgramError")))
-  (def text (if (string? err) err "Program failed"))
-  (def bound (- ((dyn :pa/limits) "frameBytes") 2))
-  (assert (<= (length (native-json/encode result)) bound) "TransportLimit")
-  (var end 0)
-  (while (< end (min bound (length text)))
-    (def [_ width] (utf8/decode-rune text end))
-    (when (= width 0) (break))
-    (+= end width))
-  (while true
-    (put result "message" (string/slice text 0 end))
-    (when (<= (length (native-json/encode result)) bound) (break))
-    (set end (math/floor (/ end 2)))
-    (while (and (> end 0) (<= 0x80 (text end) 0xbf)) (-- end)))
-  result)
+  (def result (frame type "code" (if (and (dictionary? err) (string? (err :code))) (err :code) "ProgramError")
+                     "message" (if (and (dictionary? err) (string? (err :message))) (err :message) (if (string? err) err (string/format "%n" err))) ;fields))
+  (when (dictionary? err)
+    (each key [:detail :context] (when (err key) (put result (string key) (err key)))))
+  (def size (+ 2 (length (native-json/encode result))))
+  (if (<= size ((dyn :pa/limits) "frameBytes")) result
+    (frame type "code" "DiagnosticTooLarge" "message" "Diagnostic exceeds frameBytes; increase the boundary limit."
+           "context" {:bytes size} ;fields)))

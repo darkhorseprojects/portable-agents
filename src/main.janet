@@ -4,21 +4,23 @@
 
 (var- observing true)
 (var- accepted false)
+(var- output stdout)
 (unless (index-of (os/which) [:windows :mingw]) (os/sigaction :pipe (fn [])))
 
 (defn- publish [frame]
   (def bytes (string (p/json frame) "\n"))
   (when observing
-    (try (do (file/write stdout bytes) (file/flush stdout)) ([err] (set observing false)))))
+    (try (do (file/write output bytes) (file/flush output)) ([err] (set observing false)))))
 
 (defn- emit [bytes]
   (assert accepted "MissingAdmission")
   (publish (p/frame "emit" "output" (p/base64 bytes))))
 
-(defn- log [stage]
-  (publish (p/frame "log" "stage" stage)))
+(defn- diagnostic [level value]
+  (publish (p/diagnostic "diagnostic" value "level" level)))
 
 (defn execute [request limits executable]
+  (set output (host/protocol-output))
   (with-dyns [:pa/limits limits]
     (try
       (do
@@ -32,11 +34,12 @@
         (each [name root] (pairs (get (request "program") "dependencies" {}))
           (put base (keyword name) (os/realpath root)))
         (put base 'pa/emit @{:value emit :private true})
-        (put base 'pa/log @{:value log :private true})
+        (put base 'pa/diagnostic @{:value diagnostic :private true})
         (put module/loaders :markdown md/load)
         (put base *module-make-env* (partial make-env base))
         (with-env base
-          (with-dyns [:out stderr :err stderr]
+          (with-dyns [:out (fn [bytes] (diagnostic "debug" {:code "Output" :message (string bytes)}))
+                      :err (fn [bytes] (diagnostic "warn" {:code "Stderr" :message (string bytes)}))]
             (module/add-paths ".md" :markdown)
             (module/add-file-extension ".md" :markdown)
             (def env (require (string (base *syspath*) "/" ((request "program") "entryModule"))))
@@ -46,17 +49,13 @@
             (assert (index-of (type target) [:function :cfunction]) "NotCallable")
             (set accepted true)
             (publish (p/frame "ready"))
-            (def output (with-env env
-              (with-dyns [:out stderr :err stderr]
-                (target input config))))
-            (publish (p/frame "result" "output" (p/base64 output))))))
+            (def result (with-env env (target input config)))
+            (publish (p/frame "result" "output" (p/base64 result))))))
       ([err fiber]
         (def trace @"")
-        (with-dyns [:err (fn [bytes]
-          (buffer/push-string trace (string/slice bytes 0 (min (length bytes) (- (limits "frameBytes") (length trace))))))]
-          (debug/stacktrace fiber))
-        (publish (p/diagnostic "traceback" (string trace)))
-        (publish (p/diagnostic "error" err)))))
+        (with-dyns [:err (fn [bytes] (buffer/push-string trace bytes))] (debug/stacktrace fiber))
+        (publish (p/diagnostic "error" (if (dictionary? err) (merge {:detail (string trace)} err)
+                                         {:code "ProgramError" :message (if (string? err) err (string/format "%n" err)) :detail (string trace)}))))))
   (os/exit 0 true))
 
 (defn main [executable operation & args]
@@ -75,11 +74,22 @@
       (do
         (def command (get-in request ["program" "command"]))
         (def child (os/spawn
-          (if command
-            [;command "-e" "(import portable-agents/src/main) (import portable-agents/src/protocol :as p) (def limits (p/limits (table ;(interleave [\"frameBytes\" \"admissionSeconds\"] (map scan-number (tuple/slice (dyn :args) 2)))))) (with-dyns [:pa/limits limits] (main/execute (p/request (p/receive (p/reader stdin))) limits (os/getenv \"PA_EXECUTABLE\")))" ;args]
-            [path "execute" ;args])
-          :pde (merge (os/environ) {"PA_EXECUTABLE" path
-                                  :in :pipe :out :pipe :err stderr})))
+                     (if command
+                       [;command "-e" `
+(import portable-agents/src/main)
+(import portable-agents/src/protocol :as p)
+(def limits
+  (p/limits
+    (table ;(interleave ["frameBytes" "admissionSeconds"]
+                       (map scan-number (tuple/slice (dyn :args) 2))))))
+(with-dyns [:pa/limits limits]
+  (main/execute (p/request (p/receive (p/reader stdin)))
+                limits
+                (os/getenv "PA_EXECUTABLE")))
+` ;args]
+                       [path "execute" ;args])
+                     :pde (merge (os/environ) {"PA_EXECUTABLE" path
+                                               :in :pipe :out :pipe :err stderr})))
         (def exited (ev/chan 1))
         (ev/go (fn [] (os/proc-wait child)) nil exited)
         (defer (ev/close (child :in)) (p/send (child :in) request))

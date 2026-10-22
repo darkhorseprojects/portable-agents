@@ -1,4 +1,4 @@
-/** Opaque-byte programs over Portable Agents protocol 2. @module */
+/** Opaque-byte programs over Portable Agents protocol 3. @module */
 import { spawn as spawnProcess } from "node:child_process";
 import process from "node:process";
 import { once } from "node:events";
@@ -23,19 +23,29 @@ export interface Options {
   readonly signal?: AbortSignal;
 }
 
-/** Ordered complete events; failures throw AgentError. */
+export interface Diagnostic {
+  readonly code: string;
+  readonly message: string;
+  readonly detail?: string;
+  readonly context?: Readonly<Record<string, unknown>>;
+}
+
 export type Event =
-  & { readonly version: 2 }
+  & { readonly version: 3 }
   & (
     | { readonly type: "emit"; readonly output: Uint8Array }
     | { readonly type: "result"; readonly output: Uint8Array }
-    | { readonly type: "log"; readonly stage: string }
-    | { readonly type: "traceback"; readonly message: string }
+    | ({ readonly type: "diagnostic"; readonly level: "debug" | "info" | "warn" } & Diagnostic)
   );
 
 /** Typed protocol, process, and program failures. */
 export class AgentError extends Error {
-  constructor(readonly code: string, message: string) {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly detail?: string,
+    readonly context?: Readonly<Record<string, unknown>>,
+  ) {
     super(message);
     this.name = "AgentError";
   }
@@ -45,8 +55,7 @@ const fields = new Map<string, readonly string[]>([
   ["ready", []],
   ["emit", ["output"]],
   ["result", ["output"]],
-  ["log", ["stage"]],
-  ["traceback", ["message"]],
+  ["diagnostic", ["level", "code", "message"]],
   ["error", ["code", "message"]],
 ]);
 
@@ -67,7 +76,7 @@ export async function* spawn(
     if ((input.length + config.length) * 4 / 3 > limits.frameBytes) throw new Error("Request exceeds bound");
     request = new TextEncoder().encode(
       JSON.stringify({
-        version: 2,
+        version: 3,
         program: options.program,
         input: input.toBase64(),
         config: config.toBase64(),
@@ -89,7 +98,7 @@ export async function* spawn(
       cwd: options.cwd,
       env: { ...process.env, ...options.environment },
       detached: true,
-      stdio: ["pipe", "pipe", "inherit"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
   } catch (cause) {
     throw new AgentError("ProcessFailure", String(cause));
@@ -102,6 +111,20 @@ export async function* spawn(
   });
   child.stdin!.on("error", (cause) => failure.abort(new AgentError("ProcessFailure", String(cause))));
   addAbortSignal(signal, child.stdout!);
+  addAbortSignal(signal, child.stderr!);
+  let stderr = "";
+  const diagnostics = (async () => {
+    const text = new TextDecoder();
+    let bytes = 0;
+    for await (const chunk of child.stderr! as AsyncIterable<Uint8Array>) {
+      bytes += chunk.length;
+      if (bytes > limits.frameBytes) throw new AgentError("DiagnosticTooLarge", "Native stderr exceeds frameBytes");
+      stderr += text.decode(chunk, { stream: true });
+    }
+    stderr += text.decode();
+  })().catch((cause) => {
+    if (!signal.aborted) failure.abort(cause);
+  });
   const admission = setTimeout(() =>
     failure.abort(
       new AgentError("AdmissionTimeout", "Execution may have accepted the request"),
@@ -129,19 +152,23 @@ export async function* spawn(
           used = 0;
           const required = fields.get(raw?.type);
           if (
-            raw?.version !== 2 || !required ||
-            required.some((key) => typeof raw[key] !== "string" || !raw[key].isWellFormed())
+            raw?.version !== 3 || !required ||
+            required.some((key) => typeof raw[key] !== "string" || !raw[key].isWellFormed()) ||
+            raw.detail !== undefined && (typeof raw.detail !== "string" || !raw.detail.isWellFormed()) ||
+            raw.context !== undefined &&
+              (!raw.context || typeof raw.context !== "object" || Array.isArray(raw.context)) ||
+            raw.type === "diagnostic" && !["debug", "info", "warn"].includes(raw.level)
           ) throw new Error("Invalid frame fields");
           if (raw.type === "ready") {
             if (admitted) throw new Error("Duplicate admission");
             admitted = true;
             clearTimeout(admission);
           } else {
-            if (!admitted && !["log", "traceback", "error"].includes(raw.type)) throw new Error("Missing admission");
+            if (!admitted && !["diagnostic", "error"].includes(raw.type)) throw new Error("Missing admission");
             if ("output" in raw) {
               raw.output = Uint8Array.fromBase64(raw.output);
             }
-            if (raw.type === "error") terminal = new AgentError(raw.code, raw.message);
+            if (raw.type === "error") terminal = new AgentError(raw.code, raw.message, raw.detail, raw.context);
             else if (raw.type === "result") terminal = raw;
             else yield raw;
           }
@@ -152,8 +179,10 @@ export async function* spawn(
     }
     if (used || !terminal) throw new AgentError("InvalidProtocol", "Missing or partial terminal");
     const code = await exited;
+    await diagnostics;
     signal.throwIfAborted();
-    if (code !== 0) throw new AgentError("ProcessFailure", `agent exited ${code}`);
+    if (stderr) yield { version: 3, type: "diagnostic", level: "debug", code: "NativeStderr", message: stderr };
+    if (code !== 0) throw new AgentError("ProcessFailure", `agent exited ${code}`, stderr);
     if (terminal instanceof AgentError) throw terminal;
     yield terminal;
   } catch (cause) {
@@ -162,11 +191,20 @@ export async function* spawn(
         ? signal.reason
         : new AgentError("ObservationCancelled", String(signal.reason));
     }
-    throw cause instanceof AgentError ? cause : new AgentError("ProcessFailure", String(cause));
+    if (cause instanceof AgentError) {
+      throw new AgentError(
+        cause.code,
+        cause.message,
+        [cause.detail, stderr].filter(Boolean).join("\n") || undefined,
+        cause.context,
+      );
+    }
+    throw new AgentError("ProcessFailure", String(cause), stderr);
   } finally {
     clearTimeout(admission);
     child.unref();
     child.stdin!.destroy();
     child.stdout!.destroy();
+    child.stderr!.destroy();
   }
 }

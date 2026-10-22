@@ -1,7 +1,7 @@
 # Portable Agents
 
-PA spawns ordinary Janet programs across an executable boundary. Input and configuration are opaque bytes. Programs own
-state and durable outcomes; PA owns loading, transport and observation.
+PA 0.2.0 spawns ordinary Janet programs across an executable boundary. Input and configuration are opaque bytes.
+Programs own state and durable outcomes; PA owns loading, transport and observation.
 
 There are no sockets, local servers, remote tool protocols, application-specific `self`, capability catalogs, resident
 interpreters or execution queues in PA.
@@ -73,8 +73,8 @@ for await (
 }
 ```
 
-`spawn` is an async generator: consuming it starts execution. Events are complete emitted segments, stage logs,
-tracebacks and a terminal result. Failures throw `AgentError` with a stable `code`. Breaking iteration closes
+`spawn` is an async generator: consuming it starts execution. Events are complete emitted segments, structured
+diagnostics and a terminal result. Failures throw `AgentError` with a stable `code`. Breaking iteration closes
 observation; an optional `signal` also interrupts blocked reads or exit waits without terminating accepted execution.
 `pa/emit` takes one byte value. There are no framework dependencies, factories or second `call`/`stream` APIs.
 
@@ -112,7 +112,9 @@ POSIX executions detach into their own session; Windows executions detach from t
 pipes and unreferences its bootstrap; it does not kill a process tree. Cancelling observation cancels its stdout reader
 without waiting for another program frame. Workers tolerate broken observation pipes. Janet spawns continuously drain
 intermediate frames without retaining them, even when the caller does not await the handle. Programs emit complete
-segments rather than transport fragments.
+segments rather than transport fragments. PA duplicates protocol stdout into a private non-inheritable descriptor and
+redirects ordinary process stdout to stderr; generated evaluators do not receive the protocol descriptor. Native stderr
+is bounded and retained as a diagnostic, not interleaved with protocol bytes.
 
 Programs must commit before returning. An acknowledgment can be lost after acceptance; lost observation is not proof
 that no work ran. Application operation keys and idempotency belong to the application.
@@ -131,7 +133,7 @@ Stdin is one LF-terminated JSON request followed by EOF:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "program": { "sourceDir": "/runtime/example", "entryModule": "main.janet", "entry": "answer" },
   "input": "",
   "config": ""
@@ -139,16 +141,20 @@ Stdin is one LF-terminated JSON request followed by EOF:
 ```
 
 Byte fields use Base64. Bounds are explicit: complete frame bytes and bootstrap acceptance time. Output reserves CRLF
-room. Capacity bounds do not limit application computation. Native JSON codecs own syntax and nesting limits; PA
-validates the fields it consumes, not canonical encodings or unknown fields.
+room. Diagnostics retain `code`, `message`, optional `detail` and `context`. Their levels are `debug`, `info` and
+`warn`; terminal errors use the same fields. A diagnostic exceeding the frame limit reports `DiagnosticTooLarge` and its
+original size rather than silently shortening it. Capacity bounds do not limit application computation. Native JSON
+codecs own syntax and nesting limits; PA validates the fields it consumes, not canonical encodings or unknown fields.
 
 Stdout uses the same NDJSON framing. A `ready` record acknowledges acceptance and is consumed internally by SDKs. Other
-records contain `output` (emit/result), `stage` (log), `message` (traceback), or `code`/`message` (error). Exactly one
-result/error, EOF and successful process exit are required. Terminal bytes are withheld until validated.
+records are `emit`, `result`, `diagnostic` or terminal `error`. Exactly one result/error, EOF and successful process
+exit are required. Terminal bytes are withheld until validated. `AgentError` preserves detail/context; Janet spawns can
+forward diagnostics through `:diagnostic` alongside their `:emit` observer.
 
 UTF-8, consumed fields, Base64 and duplicate/trailing terminals are checked. Duplicate JSON keys use the codec's
 last-value behavior; noncanonical Base64 is accepted. Janet uses native Spork JSON syntax, while TypeScript uses
-JSON.parse. There is no second socket or length-header protocol. Version 2 requires matching native binaries and SDKs.
+JSON.parse. There is no second socket or length-header protocol. Version 3 requires matching native binaries and SDKs.
+Package version 0.2.0 is independent of the wire version.
 
 ## Native codec license
 

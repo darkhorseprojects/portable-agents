@@ -1,6 +1,6 @@
 (declare-project
   :name "portable-agents"
-  :version "0.3.0"
+  :version "0.2.0"
   :description "A small execution boundary for ordinary Janet programs"
   :license "AGPL-3.0-only"
   :dependencies [{:repo "https://github.com/janet-lang/spork.git" :tag "8a87c5ae1cbbf3a0037eeac7f172bd45da4d9910"}])
@@ -15,8 +15,11 @@
 #include <string.h>
 #ifdef _WIN32
 #include <windows.h>
+#include <io.h>
+#include <fcntl.h>
 #else
 #include <unistd.h>
+#include <fcntl.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -58,6 +61,29 @@ static Janet executable(int32_t argc, Janet *argv) {
     }
 }
 
+static Janet protocol_output(int32_t argc, Janet *argv) {
+    (void)argv;
+    janet_fixarity(argc, 0);
+    fflush(stdout);
+#ifdef _WIN32
+    int descriptor = _dup(_fileno(stdout));
+    if (descriptor < 0) janet_panic(strerror(errno));
+    if (!SetHandleInformation((HANDLE)_get_osfhandle(descriptor), HANDLE_FLAG_INHERIT, 0))
+        janet_panic("SetHandleInformation failed");
+    if (_setmode(descriptor, _O_BINARY) < 0) janet_panic(strerror(errno));
+    FILE *output = _fdopen(descriptor, "wb");
+    if (!output || _dup2(_fileno(stderr), _fileno(stdout))) janet_panic(strerror(errno));
+    if (!SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(_fileno(stdout))))
+        janet_panic("SetStdHandle failed");
+#else
+    int descriptor = fcntl(STDOUT_FILENO, F_DUPFD_CLOEXEC, 3);
+    if (descriptor < 0) janet_panic(strerror(errno));
+    FILE *output = fdopen(descriptor, "wb");
+    if (!output || dup2(STDERR_FILENO, STDOUT_FILENO) < 0) janet_panic(strerror(errno));
+#endif
+    return janet_makefile(output, JANET_FILE_WRITE | JANET_FILE_BINARY);
+}
+
 static Janet detach(int32_t argc, Janet *argv) {
     (void)argv;
     janet_fixarity(argc, 0);
@@ -73,6 +99,7 @@ static Janet detach(int32_t argc, Janet *argv) {
 JANET_MODULE_ENTRY(JanetTable *env) {
     janet_def(env, "executable", janet_wrap_cfunction(executable), NULL);
     janet_def(env, "detach", janet_wrap_cfunction(detach), NULL);
+    janet_def(env, "protocol-output", janet_wrap_cfunction(protocol_output), NULL);
 }
 ```)
 (unless (and (os/stat "build/host.c") (= host-source (string (slurp "build/host.c"))))

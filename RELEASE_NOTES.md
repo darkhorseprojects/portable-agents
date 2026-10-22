@@ -1,13 +1,10 @@
-# 0.3.0
+# Portable Agents 0.2.0
 
-Protocol 2 uses native Spork JSON, UTF-8 and Base64 codecs. PA validates consumed fields and transport bounds rather
-than duplicate keys, canonical encodings, unknown fields or a configurable JSON depth. Install matching binaries, Janet
-sources and TypeScript SDKs; there is no protocol-1 adapter.
+- Protocol stdout uses a private non-inheritable descriptor on POSIX and Windows.
+- Protocol 3 replaces separate log/traceback frames with structured diagnostics.
+- Both SDKs retain error detail/context and explicit diagnostic limit failures.
+- Native stderr is drained independently of the protocol stream.
+- Six-platform native/SDK builds remain; inline runtime fixtures are removed.
 
-The CLI takes `spawn FRAME-BYTES ADMISSION-SECONDS`. Input/config decoding precedes source loading and acceptance. The
-TypeScript SDK uses bounded streaming UTF-8 decoding. Both SDKs preserve admission ordering, terminal uniqueness, EOF,
-exit checks and observation cancellation without killing accepted work.
-
-CI caches Janet/Jpm bootstrap independently of PA dependencies, saves it before installing PA, and exports the matching
-installed toolchain separately. Downstream toolchain calls skip redundant PA regressions. Native codec and streaming
-boundary regressions run on PA changes; ordinary changes build three platforms, releases and manual runs all six.
+Install matching native binaries, Janet sources and TypeScript SDKs together. Package version 0.2.0 is independent of
+protocol version 3.
