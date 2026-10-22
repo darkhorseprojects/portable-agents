@@ -16,9 +16,9 @@ jpm deps
 jpm install
 ```
 
-The existing CI workflow also exports the pinned Linux Janet/Jpm toolchain through `workflow_call` with
-`toolchain: REVISION`. The artifact includes the matching native PA executable and Janet sources. Consumers install it
-rather than maintaining another bootstrap.
+The CI workflow also exports the pinned Janet/Jpm toolchain through `workflow_call` with `toolchain: REVISION`. Each
+`janet-toolchain-TARGET` artifact includes the matching native PA executable and Janet sources for Linux, macOS or
+Windows on x86-64 or ARM64. Consumers activate their matching artifact rather than maintaining another bootstrap.
 
 Jpm builds and installs the native `agent` executable and Janet SDK sources. `deno task compile` also builds
 `build/agent` (`agent.exe` on Windows). The normal executor embeds Janet and its loader; it needs neither Deno nor an

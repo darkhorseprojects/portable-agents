@@ -20,7 +20,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.toolchain && '[{"os":"ubuntu-24.04","id":"linux-x86_64"}]' || (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && '[{"os":"ubuntu-24.04","id":"linux-x86_64"},{"os":"ubuntu-24.04-arm","id":"linux-aarch64"},{"os":"macos-15-intel","id":"macos-x86_64"},{"os":"macos-15","id":"macos-aarch64"},{"os":"windows-latest","id":"windows-x86_64"},{"os":"windows-11-arm","id":"windows-aarch64"}]' || '[{"os":"ubuntu-24.04","id":"linux-x86_64"},{"os":"macos-15","id":"macos-aarch64"},{"os":"windows-latest","id":"windows-x86_64"}]') }}
+        include:
+          - { os: ubuntu-24.04, id: linux-x86_64 }
+          - { os: ubuntu-24.04-arm, id: linux-aarch64 }
+          - { os: macos-15-intel, id: macos-x86_64 }
+          - { os: macos-15, id: macos-aarch64 }
+          - { os: windows-latest, id: windows-x86_64 }
+          - { os: windows-11-arm, id: windows-aarch64 }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -29,6 +35,8 @@ jobs:
           ref: ${{ inputs.toolchain || github.sha }}
           path: portable-agents
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with: { python-version: "3.13" }
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         id: toolchain
         with:
@@ -49,7 +57,6 @@ jobs:
           path: jpm
           persist-credentials: false
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
-        if: ${{ !inputs.toolchain && matrix.id == 'linux-x86_64' }}
         with: { deno-version: v2.9.7 }
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
         if: runner.os == 'Windows'
@@ -90,7 +97,6 @@ jobs:
           path: ${{ runner.os == 'Windows' && 'janet' || format('{0}/janet', runner.temp) }}
           key: ${{ steps.toolchain.outputs.cache-primary-key }}
       - name: Check SDK
-        if: ${{ !inputs.toolchain && matrix.id == 'linux-x86_64' }}
         working-directory: portable-agents
         run: deno task check
       - name: Install native boundary
@@ -100,11 +106,10 @@ jobs:
           jpm deps
           jpm install
       - name: Exercise native boundary
-        if: ${{ !inputs.toolchain }}
         working-directory: portable-agents
         shell: python
         env:
-          CHECK_SDK: ${{ !inputs.toolchain && matrix.id == 'linux-x86_64' }}
+          CHECK_SDK: "true"
         run: |
           import base64, json, os, pathlib, shutil, subprocess, tempfile, time
           executable = str(pathlib.Path("build/agent.exe" if os.name == "nt" else "build/agent").resolve())
@@ -184,11 +189,20 @@ jobs:
                   ''',directory,executable],check=True,timeout=60)
       - name: Export toolchain
         if: inputs.toolchain != ''
-        run: tar --exclude=.cache -cf "$RUNNER_TEMP/toolchain.tar" -C "$RUNNER_TEMP" janet
+        shell: python
+        run: |
+          import os, pathlib, tarfile
+          prefix = pathlib.Path(os.environ["PREFIX"])
+          with tarfile.open(pathlib.Path(os.environ["RUNNER_TEMP"]) / "toolchain.tar", "w") as archive:
+              archive.add(prefix, arcname="janet", recursive=False)
+              for path in prefix.rglob("*"):
+                  relative = path.relative_to(prefix)
+                  if not {".cache", ".git"}.intersection(relative.parts):
+                      archive.add(path, arcname=str(pathlib.PurePosixPath("janet", *relative.parts)), recursive=False)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: inputs.toolchain != ''
         with:
-          name: janet-toolchain
+          name: janet-toolchain-${{ matrix.id }}
           path: ${{ runner.temp }}/toolchain.tar
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
