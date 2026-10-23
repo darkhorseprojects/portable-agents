@@ -54,7 +54,7 @@
       ([err fiber]
         (def trace @"")
         (with-dyns [:err (fn [bytes] (buffer/push-string trace bytes))] (debug/stacktrace fiber))
-        (publish (p/diagnostic "error" (if (dictionary? err) (merge {:detail (string trace)} err)
+        (publish (p/diagnostic "error" (if (dictionary? err) (merge err {:detail (string (or (err :detail) "") "\n" trace)})
                                          {:code "ProgramError" :message (if (string? err) err (string/format "%n" err)) :detail (string trace)}))))))
   (os/exit 0 true))
 

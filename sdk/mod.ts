@@ -181,9 +181,9 @@ export async function* spawn(
     const code = await exited;
     await diagnostics;
     signal.throwIfAborted();
-    if (stderr) yield { version: 3, type: "diagnostic", level: "debug", code: "NativeStderr", message: stderr };
-    if (code !== 0) throw new AgentError("ProcessFailure", `agent exited ${code}`, stderr);
+    if (code !== 0) throw new AgentError("ProcessFailure", `agent exited ${code}`);
     if (terminal instanceof AgentError) throw terminal;
+    if (stderr) yield { version: 3, type: "diagnostic", level: "debug", code: "NativeStderr", message: stderr };
     yield terminal;
   } catch (cause) {
     if (signal.aborted) {

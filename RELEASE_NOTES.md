@@ -3,6 +3,7 @@
 - Protocol stdout uses a private non-inheritable descriptor on POSIX and Windows.
 - Protocol 3 replaces separate log/traceback frames with structured diagnostics.
 - Both SDKs retain error detail/context and explicit diagnostic limit failures.
+- Boundary stacks append to originating detail; native stderr is attached once.
 - Native stderr is drained independently of the protocol stream.
 - Six-platform native/SDK builds remain; inline runtime fixtures are removed.
 
