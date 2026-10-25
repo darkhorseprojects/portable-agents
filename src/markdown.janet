@@ -1,87 +1,64 @@
-(def- heading (peg/compile ~(* (capture (between 1 6 "#")) " " (capture (some 1)) -1)))
-(def- fence (peg/compile ~(* (capture (choice (at-least 3 "`") (at-least 3 "~"))) (capture (any 1)) -1)))
-(def- closing (peg/compile ~(* (capture (choice (at-least 3 "`") (at-least 3 "~"))) (any (set " \t")) -1)))
-(def- item (peg/compile ~(* (choice (set "-*+") (* (some (range "09")) ".")) " " (capture (any 1)) -1)))
-(def- separator (peg/compile ~(* (opt ":") (at-least 3 "-") (opt ":") -1)))
+(def- markdown
+  (delay
+    (def api (require "remarkable/lib/remarkable"))
+    [(module/value api 'parse-md)
+     (peg/compile (module/value (require "remarkable/lib/blocks") 'grammar))
+     (peg/compile (module/value (require "remarkable/lib/inlines") 'grammar))]))
 
-(defn- parse [source]
-  (def root @{:content @[]})
-  (def stack @[[0 root]])
-  (def script @"")
-  (def lines (string/split "\n" (string/replace-all "\r\n" "\n" source)))
-  (defn cells [line]
-    (when (and (string/has-prefix? "|" line) (string/has-suffix? "|" line))
-      (map string/trim (string/split "|" (string/slice line 1 -2)))))
-  (var i 0)
-  (var paragraph nil)
-  (while (< i (length lines))
-    (def line (string/trim (lines i)))
-    (def content (((last stack) 1) :content))
-    (def h (peg/match heading line))
-    (def f (peg/match fence line))
-    (var li (peg/match item line))
-    (def headers (cells line))
-    (def separators (when headers (cells (string/trim (get lines (+ i 1) "")))))
-    (when (or (= "" line) h f li separators) (set paragraph nil))
-    (cond
-      (= "" line) (++ i)
-      h (do
-          (def level (length (h 0)))
-          (while (>= ((last stack) 0) level) (array/pop stack))
-          (def name (string/trim (h 1)))
-          (assert (not= "" name) "InvalidHeading")
-          (def node @{:name name :content @[]})
-          (array/push (((last stack) 1) :content) node)
-          (array/push stack [level node]) (++ i))
-      f (do
-          (def text @"")
-          (++ i)
-          (var end nil)
-          (while (and (< i (length lines))
-                      (not (and (set end (peg/match closing (string/trim (lines i))))
-                                (= ((end 0) 0) ((f 0) 0)) (>= (length (end 0)) (length (f 0))))))
-            (buffer/push-string text (lines i) "\n") (++ i))
-          (assert (< i (length lines)) "UnclosedFence")
-          (def language (string/trim (f 1)))
-          (if (= "janet" language) (buffer/push-string script text "\n")
-            (array/push content {:language language :text (string text)}))
-          (++ i))
-      li (do
-           (def list @[])
-           (while (and (< i (length lines)) (set li (peg/match item (string/trim (lines i)))))
-             (array/push list (string/trim (li 0))) (++ i))
-           (array/push content (tuple/slice list)))
-      separators
-      (do
-        (assert (and (= (length headers) (length separators)) (= (length headers) (length (distinct headers)))
-                     (every? (map |(peg/match separator $) separators))
-                     (every? (map |(not= "" $) headers))) "InvalidTable")
-        (def rows @[])
-        (+= i 2)
-        (while (and (< i (length lines)) (cells (string/trim (lines i))))
-          (def row (cells (string/trim (lines i))))
-          (assert (= (length headers) (length row)) "InvalidTable")
-          (array/push rows (struct ;(interleave headers row))) (++ i))
-        (array/push content (tuple/slice rows)))
-      (do
-        (unless paragraph (set paragraph @"") (array/push content paragraph))
-        (when (> (length paragraph) 0) (buffer/push-string paragraph "\n"))
-        (buffer/push-string paragraph (lines i))
-        (++ i))))
-  (defn freeze [node]
-    (def content (tuple/slice (map |(cond (table? $) (freeze $) (buffer? $) (string $) $) (node :content))))
-    (if (has-key? node :name) {:name (node :name) :content content} {:content content}))
-  [(freeze root) (string script)])
+(defn- text [node]
+  (if (bytes? node) (string node)
+    (let [[kind attrs children] node
+          body (if (bytes? children) (string children) (string/join (map text children)))]
+      (case kind
+        :link (string body " (" (attrs :url) ")")
+        :image (string body " (" (attrs :url) ")")
+        :hardbreak "\n"
+        body))))
+
+(defn- content [node]
+  (def [kind attrs children] node)
+  (case kind
+    :list (tuple/slice (map content children))
+    :list-item (let [parts (tuple/slice (map content children))] (if (= 1 (length parts)) (first parts) {:content parts}))
+    :blockquote {:content (tuple/slice (map content children))}
+    :codeblock {:language (get attrs :info "") :text (string/join children)}
+    :thematic-break "---"
+    (text node)))
 
 (defn load [path args]
   (def loading (dyn *module-loading* module/loading))
   (put loading path true)
   (defer (put loading path nil)
-    (def [document code] (parse (slurp path)))
+    (def [parse blocks inlines] (markdown))
+    (def ast (parse (slurp path) :blocks blocks :inlines inlines))
+    (def root @{:content @[]})
+    (def stack @[[0 root]])
+    (def code @"")
+    (each node (ast 2)
+      (def [kind attrs children] node)
+      (cond
+        (= kind :heading)
+        (do
+          (def level (attrs :level))
+          (while (>= ((last stack) 0) level) (array/pop stack))
+          (def section @{:name (text node) :level level :content @[]})
+          (array/push (((last stack) 1) :content) section)
+          (array/push stack [level section]))
+        (and (= kind :codeblock) (= :fenced (attrs :kind)) (= "janet" (attrs :info)))
+        (buffer/push-string code (string/join children) "\n")
+        (array/push (((last stack) 1) :content) (content node))))
+    (def document (postwalk |(cond (buffer? $) (string $) (array? $) (tuple/slice $)
+                                  (table? $) (struct ;(mapcat identity (pairs $))) $) root))
     (def env ((dyn *module-make-env* make-env)))
     (put env 'document @{:value document})
-    (put env 'pa/document @{:value (fn [] document) :private true})
     (with [file (file/temp)]
       (file/write file code)
       (file/seek file :set 0)
       (dofile file ;args :env env :source path))))
+
+(defn register []
+  (put module/loaders :markdown load)
+  (module/add-paths ".md" :markdown)
+  (module/add-file-extension ".md" :markdown))
+
+(register)

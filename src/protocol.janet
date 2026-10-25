@@ -2,7 +2,7 @@
 (import spork/json :as native-json)
 (import spork/utf8 :as utf8)
 
-(def version 3)
+(def version 1)
 
 (defn limits [value]
   (assert (and (int? (value "frameBytes")) (<= 1 (value "frameBytes") 0x7fffffff)) "InvalidLimits")
@@ -10,8 +10,7 @@
   value)
 
 (defn- program [value]
-  (when (has-key? value "command")
-    (assert (and (indexed? (value "command")) (> (length (value "command")) 0)) "InvalidProgram"))
+  (assert (not (has-key? value "command")) "UnsupportedProgramCommand")
   (each k ["sourceDir" "entryModule" "entry"]
     (assert (and (string? (value k)) (> (length (value k)) 0) (not (string/find "\0" (value k)))) "InvalidProgram"))
   (def dependencies (get value "dependencies" {}))
@@ -44,13 +43,12 @@
 (defn frame [type & pairs] (table "version" version "type" type ;pairs))
 
 (defn event [value]
-  (def fields (or (get {"ready" [] "emit" ["output"] "result" ["output"] "diagnostic" ["level" "code" "message"] "error" ["code" "message"]} (get value "type")) (error "InvalidProtocol")))
+  (def fields (or (get {"ready" [] "stdout" ["output"] "result" ["output"] "error" ["code" "message"]} (get value "type")) (error "InvalidProtocol")))
   (assert (= version (value "version")) "InvalidProtocol")
   (each key fields (assert (string? (value key)) "InvalidProtocol"))
-  (when (has-key? value "output") (base64 (value "output") true))
+  (when (has-key? value "output") (put value "output" (base64 (value "output") true)))
   (when (has-key? value "detail") (assert (string? (value "detail")) "InvalidProtocol"))
   (when (has-key? value "context") (assert (dictionary? (value "context")) "InvalidProtocol"))
-  (when (= "diagnostic" (value "type")) (assert (index-of (value "level") ["debug" "info" "warn"]) "InvalidProtocol"))
   value)
 
 (defn send [io value]
@@ -79,16 +77,28 @@
       (assert (not (state :terminal)) "InvalidProtocol")
       (case (value "type")
         "ready" (do (assert (not (state :ready)) "InvalidProtocol") (put state :ready true))
-        (assert (or (state :ready) (index-of (value "type") ["diagnostic" "error"])) "InvalidProtocol"))
+        (assert (or (state :ready) (index-of (value "type") ["stdout" "error"])) "InvalidProtocol"))
       (when (index-of (value "type") ["result" "error"]) (put state :terminal value)))
     value))
 
-(defn diagnostic [type err & fields]
-  (def result (frame type "code" (if (and (dictionary? err) (string? (err :code))) (err :code) "ProgramError")
-                     "message" (if (and (dictionary? err) (string? (err :message))) (err :message) (if (string? err) err (string/format "%n" err))) ;fields))
+(defn output [reader &opt ready]
+  (label result
+    (var frame nil)
+    (while (set frame (receive reader))
+      (case (frame "type")
+        "stdout" (prin (frame "output"))
+        "ready" (when ready (return result reader))))
+    (def terminal (reader :terminal))
+    (when (= "error" (terminal "type"))
+      (error (tabseq [[key value] :in (pairs terminal) :unless (index-of key ["version" "type"])] (keyword key) value)))
+    (terminal "output")))
+
+(defn failure [err]
+  (def result (frame "error" "code" (if (and (dictionary? err) (string? (err :code))) (err :code) "ProgramError")
+                            "message" (if (and (dictionary? err) (string? (err :message))) (err :message) (if (string? err) err (string/format "%n" err)))))
   (when (dictionary? err)
     (each key [:detail :context] (when (err key) (put result (string key) (err key)))))
   (def size (+ 2 (length (native-json/encode result))))
   (if (<= size ((dyn :pa/limits) "frameBytes")) result
-    (frame type "code" "DiagnosticTooLarge" "message" "Diagnostic exceeds frameBytes; increase the boundary limit."
-           "context" {:bytes size} ;fields)))
+    (frame "error" "code" "ErrorTooLarge" "message" "Error exceeds frameBytes; increase the boundary limit."
+           "context" {:bytes size})))

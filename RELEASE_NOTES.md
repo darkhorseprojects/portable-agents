@@ -1,11 +1,9 @@
 # Portable Agents 0.2.0
 
-- Protocol stdout uses a private non-inheritable descriptor on POSIX and Windows.
-- Protocol 3 replaces separate log/traceback frames with structured diagnostics.
-- Both SDKs retain error detail/context and explicit diagnostic limit failures.
-- Boundary stacks append to originating detail; native stderr is attached once.
-- Native stderr is drained independently of the protocol stream.
-- Six-platform native/SDK builds remain; inline runtime fixtures are removed.
-
-Install matching native binaries, Janet sources and TypeScript SDKs together. Package version 0.2.0 is independent of
-protocol version 3.
+- One native `agent run` entrypoint; no protocol relay or alternate interpreter launcher.
+- Standard Janet printing and errors replace PA emissions and diagnostics.
+- Janet processes/fibers replace PA spawning, handles and awaiting.
+- The TypeScript SDK only encodes requests and decodes bounded output streams.
+- Lazy Remarkable parsing replaces the custom Markdown grammar; `document` is data.
+- Worker detachment, private protocol output and broken-pipe handling remain native.
+- Package version is 0.2.0; wire schema is 1. Install matching components together.
