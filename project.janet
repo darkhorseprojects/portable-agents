@@ -6,7 +6,7 @@
   :dependencies [{:repo "https://github.com/janet-lang/spork.git" :tag "8a87c5ae1cbbf3a0037eeac7f172bd45da4d9910"}
                  {:repo "https://github.com/pyrmont/remarkable.git" :tag "e3bbf2f5e18c1b3ed33ccf7872b6719351334424"}])
 
-(declare-source :source ["src/markdown.janet" "src/protocol.janet"] :prefix "portable-agents/src")
+(declare-source :source ["lib/portable-agents"])
 
 (os/mkdir "build")
 (def host-source ```
@@ -86,7 +86,7 @@ JANET_MODULE_ENTRY(JanetTable *env) {
 (declare-executable
   :name "agent"
   :entry "src/main.janet"
-  :deps ["src/protocol.janet" "src/markdown.janet"
+  :deps ["lib/portable-agents/protocol.janet" "lib/portable-agents/markdown.janet"
          (string (dyn :modpath) "/spork/sh.janet")
          (string (dyn :modpath) "/spork/path.janet")
          (string (dyn :modpath) "/spork/base64" (dyn :modext))

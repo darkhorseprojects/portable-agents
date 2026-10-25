@@ -5,25 +5,18 @@
      (peg/compile (module/value (require "remarkable/lib/blocks") 'grammar))
      (peg/compile (module/value (require "remarkable/lib/inlines") 'grammar))]))
 
-(defn- text [node]
-  (if (bytes? node) (string node)
-    (let [[kind attrs children] node
-          body (if (bytes? children) (string children) (string/join (map text children)))]
-      (case kind
-        :link (string body " (" (attrs :url) ")")
-        :image (string body " (" (attrs :url) ")")
-        :hardbreak "\n"
-        body))))
-
 (defn- content [node]
-  (def [kind attrs children] node)
-  (case kind
-    :list (tuple/slice (map content children))
-    :list-item (let [parts (tuple/slice (map content children))] (if (= 1 (length parts)) (first parts) {:content parts}))
-    :blockquote {:content (tuple/slice (map content children))}
-    :codeblock {:language (get attrs :info "") :text (string/join children)}
-    :thematic-break "---"
-    (text node)))
+  (if (bytes? node) (string node)
+    (let [[kind attrs children] node]
+      (case kind
+        :list (tuple/slice (map content children))
+        :list-item (let [parts (tuple/slice (map content children))] (if (= 1 (length parts)) (first parts) {:content parts}))
+        :blockquote {:content (tuple/slice (map content children))}
+        :codeblock {:language (get attrs :info "") :text (string/join children)}
+        :thematic-break "---"
+        :hardbreak "\n"
+        (let [body (if (bytes? children) (string children) (string/join (map content children)))]
+          (if (index-of kind [:link :image]) (string body " (" (attrs :url) ")") body))))))
 
 (defn load [path args]
   (def loading (dyn *module-loading* module/loading))
@@ -41,7 +34,7 @@
         (do
           (def level (attrs :level))
           (while (>= ((last stack) 0) level) (array/pop stack))
-          (def section @{:name (text node) :level level :content @[]})
+          (def section @{:name (content node) :level level :content @[]})
           (array/push (((last stack) 1) :content) section)
           (array/push stack [level section]))
         (and (= kind :codeblock) (= :fenced (attrs :kind)) (= "janet" (attrs :info)))

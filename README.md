@@ -39,8 +39,18 @@ function name:
 injected `emit` or `diagnostic` functions. Libraries use normal imports, module caching and explicit `@name` dependency
 roots.
 
-For trusted literate modules, import `portable-agents/src/markdown` before requiring `.md` files. The worker registers
-this loader itself. Remarkable parses CommonMark; only top-level fenced `janet` blocks execute, in order. Incoming
+Library modules install as `portable-agents/protocol` and `portable-agents/markdown`; `src/main.janet` is CLI-only. For
+trusted literate modules, import the loader and call ordinary exports:
+
+```janet
+(import portable-agents/markdown)
+(import ./agent.md :as agent)
+
+(agent/answer input config)
+```
+
+Direct calls inherit the caller's I/O and do not create an independent worker. The native worker explicitly registers
+the loader at startup. Remarkable parses CommonMark; only top-level fenced `janet` blocks execute, in order. Incoming
 messages and retrieved Markdown are not source modules.
 
 The module's `document` binding contains ordered sections and lists:
@@ -75,10 +85,11 @@ Stdin is one LF-terminated JSON request followed by EOF:
 roots. `program.command` is not supported.
 
 Protocol schema 1 uses bounded UTF-8 NDJSON: `ready`, `stdout`, terminal `result` or terminal `error`. Output records
-contain an `output` byte field; errors contain `code`, `message`, and optional `detail`/`context`. Stderr is an ordinary
-separate stream with no PA severity or application schema. Stdout may occur while loading; readiness means the
-entrypoint is resolved, not that application admission committed. A successful invocation requires one terminal result,
-EOF and successful process exit. Printing is a byte stream, not an application record boundary.
+contain an `output` byte field; string and buffer payloads encode identically. Errors contain `code`, `message`, and
+optional `detail`/`context`. Stderr is an ordinary separate stream with no PA severity or application schema. Stdout may
+occur while loading; readiness means the entrypoint is resolved, not that application admission committed. Output sinks
+are inherited by loaded modules and the entrypoint. A successful invocation requires one terminal result, EOF and
+successful process exit. Printing is a byte stream, not an application record boundary.
 
 The worker supplies trusted code with `:pa/executable`, `:pa/program` and `:pa/limits` metadata. To launch independent
 work use `os/spawn`; use `ev/` and `os/proc-wait` for concurrency and reaping. The Janet protocol library's `output`
