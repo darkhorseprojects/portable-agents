@@ -1,5 +1,5 @@
 (import ../lib/portable-agents/protocol :as p)
-(import ../lib/portable-agents/markdown :as md)
+(import ../lib/portable-agents/markdown)
 (import spork/sh :as sh)
 (import spork/path :as path)
 (import portable-agents/host :as host)
@@ -47,7 +47,6 @@
         (put base :err log)
         (put base *module-make-env* (partial make-env base))
         (with-env base
-          (md/register)
           (def env (require (string (base *syspath*) "/" (program "entryModule"))))
           (def name (symbol (program "entry")))
           (assert (and (has-key? env name) (not ((env name) :private)) (not ((env name) :macro))) "UnknownEntry")
