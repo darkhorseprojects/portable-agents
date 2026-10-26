@@ -7,14 +7,35 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
-      toolchain: { type: string, default: "" }
+      pa: { type: string, required: true }
 permissions: { contents: read }
 concurrency:
-  group: pa-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+env:
+  PROJECT: ${{ github.event.repository.name }}
 jobs:
+  check:
+    if: github.event.repository.name != 'zinc'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: { path: "${{ env.PROJECT }}", persist-credentials: false }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: env.PROJECT == 'agent-connector'
+        with:
+          repository: darkhorseprojects/portable-agents
+          ref: ${{ inputs.pa }}
+          path: portable-agents
+          persist-credentials: false
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with: { deno-version: v2.9.7 }
+      - run: deno task check
+        working-directory: ${{ env.PROJECT }}
   build:
-    timeout-minutes: 20
+    needs: check
+    if: ${{ !failure() && !cancelled() }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -26,35 +47,39 @@ jobs:
           - { os: windows-latest, id: windows-x86_64 }
           - { os: windows-11-arm, id: windows-aarch64 }
     runs-on: ${{ matrix.os }}
+    env: { JANET_SYSTEM_SQLITE: "0", TARGET: "${{ matrix.id }}" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: { path: "${{ env.PROJECT }}", persist-credentials: false }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: env.PROJECT == 'agent-connector'
         with:
           repository: darkhorseprojects/portable-agents
-          ref: ${{ inputs.toolchain || github.sha }}
+          ref: ${{ inputs.pa }}
           path: portable-agents
           persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with: {
-          repository: janet-lang/janet,
-          ref: e1963cdfe0148f83601907727e00bd672d798115,
-          path: janet,
-          persist-credentials: false,
-        }
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with: {
-          repository: janet-lang/jpm,
-          ref: 029d0c4cfefd2d359ddc5344eae61a1771f4e673,
-          path: jpm,
-          persist-credentials: false,
-        }
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
-        with: { python-version: "3.13" }
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        if: env.PROJECT == 'agent-connector'
         with: { deno-version: v2.9.7 }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: env.PROJECT != 'agent-connector'
+        with:
+          repository: janet-lang/janet
+          ref: e1963cdfe0148f83601907727e00bd672d798115
+          path: janet
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        if: env.PROJECT != 'agent-connector'
+        with:
+          repository: janet-lang/jpm
+          ref: 029d0c4cfefd2d359ddc5344eae61a1771f4e673
+          path: jpm
+          persist-credentials: false
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
-        if: runner.os == 'Windows'
+        if: env.PROJECT != 'agent-connector' && runner.os == 'Windows'
         with: { arch: "${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}" }
-      - name: Build Janet
+      - name: Build Janet and Jpm
+        if: env.PROJECT != 'agent-connector'
         shell: python
         run: |
           import os, pathlib, shutil, subprocess
@@ -64,54 +89,102 @@ jobs:
           if windows:
               subprocess.run(["cmd", "/c", "build_win.bat"], cwd=source, check=True)
               subprocess.run([str(source / "janet.exe"), "tools/patch-header.janet", "src/include/janet.h", "src/conf/janetconf.h", "build/janet.h"], cwd=source, check=True)
-              shutil.copyfile(source / "janet.lib", source / "build/janet.lib")
+              (prefix / "bin").mkdir()
+              subprocess.run(["link", "/nologo", "/DLL", f"/OUT:{prefix / 'bin/janet.dll'}", f"/IMPLIB:{source / 'build/janet.lib'}", str(source / "build/janet.obj")], check=True)
+              shutil.copyfile(source / "build/janet.lib", source / "build/libjanet.lib")
+              subprocess.run(["cl", "/nologo", "/MD", "/O2", "/DJANET_DLL_IMPORT", "/Isrc/include", "/Isrc/conf", "/c", "src/mainclient/shell.c", "/Fobuild/shell-shared.obj"], cwd=source, check=True)
+              subprocess.run(["link", "/nologo", f"/OUT:{prefix / 'bin/janet.exe'}", str(source / "build/shell-shared.obj"), str(source / "build/janet.lib"), str(source / "build/janet_win.res")], check=True)
           else:
               subprocess.run(["make", "-C", str(source), "-j2", f"PREFIX={prefix}"], check=True)
               subprocess.run(["make", "-C", str(source), "install", f"PREFIX={prefix}"], check=True)
           library = source / "build" if windows else prefix / "lib"
-          env = {"PREFIX": prefix, "JANET_HEADERPATH": source / "build" if windows else prefix / "include/janet",
-                 "JANET_LIBPATH": library, "JANET_BINPATH": prefix / "bin", "JANET_MODPATH": prefix / ("lib" if windows else "lib/janet"),
-                 "JANET_PATH": prefix / ("lib" if windows else "lib/janet"), "LD_LIBRARY_PATH": library, "DYLD_LIBRARY_PATH": library}
-          environment = "".join(f"{key}={value}\n" for key, value in env.items())
-          (prefix / "environment").write_text(environment)
-          with open(os.environ["GITHUB_ENV"], "a") as out: out.write(environment)
-          with open(os.environ["GITHUB_PATH"], "a") as out:
-              if windows: out.write(f"{source}\n")
-              out.write(f"{prefix / 'bin'}\n")
-      - name: Install Jpm
-        working-directory: jpm
-        run: janet bootstrap.janet
-      - name: Check and install PA
-        working-directory: portable-agents
-        run: |
-          deno task check
-          jpm deps
-          jpm install
-      - name: Export toolchain
-        if: inputs.toolchain != ''
+          modules = prefix / ("lib" if windows else "lib/janet")
+          env = {key: str(value) for key, value in {
+              "PREFIX": prefix, "JANET_HEADERPATH": source / "build" if windows else prefix / "include/janet",
+              "JANET_LIBPATH": library, "JANET_BINPATH": prefix / "bin", "JANET_MODPATH": modules,
+              "JANET_PATH": modules, "LD_LIBRARY_PATH": library, "DYLD_LIBRARY_PATH": library}.items()}
+          subprocess.run([str(prefix / "bin" / ("janet.exe" if windows else "janet")), "bootstrap.janet"], cwd="jpm", env={**os.environ, **env}, check=True)
+          if windows:
+              with (modules / "jpm/default-config.janet").open("a", encoding="utf-8") as output:
+                  output.write('\n(put config :janet-cflags ["/DJANET_DLL_IMPORT"])\n')
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write("".join(f"{key}={value}\n" for key, value in env.items()))
+          with open(os.environ["GITHUB_PATH"], "a", encoding="utf-8") as output:
+              output.write(f"{prefix / 'bin'}\n")
+      - name: Provision libcurl
+        if: env.PROJECT == 'zinc'
         shell: python
         run: |
-          import os, pathlib, tarfile
-          prefix = pathlib.Path(os.environ["PREFIX"])
-          with tarfile.open(pathlib.Path(os.environ["RUNNER_TEMP"]) / "toolchain.tar", "w") as archive:
-              archive.add(prefix, arcname="janet", recursive=False)
-              for path in prefix.rglob("*"):
-                  relative = path.relative_to(prefix)
-                  if not {".cache", ".git"}.intersection(relative.parts):
-                      archive.add(path, arcname=str(pathlib.PurePosixPath("janet", *relative.parts)), recursive=False)
+          import os, pathlib, subprocess, sys
+          if sys.platform == "linux":
+              subprocess.run(["sudo", "apt-get", "update"], check=True)
+              subprocess.run(["sudo", "apt-get", "install", "-y", "pkg-config", "libcurl4-openssl-dev"], check=True)
+          elif sys.platform == "darwin":
+              subprocess.run(["brew", "install", "pkgconf", "curl"], check=True)
+              prefix = subprocess.check_output(["brew", "--prefix", "curl"], text=True).strip()
+              with open(os.environ["GITHUB_ENV"], "a") as output: output.write(f"PKG_CONFIG_PATH={prefix}/lib/pkgconfig\n")
+          else:
+              root = pathlib.Path(os.environ["VCPKG_INSTALLATION_ROOT"])
+              triplet = "arm64-windows" if os.environ["RUNNER_ARCH"] == "ARM64" else "x64-windows"
+              installed = pathlib.Path(os.environ["RUNNER_TEMP"]) / "curl"
+              subprocess.run([str(root / "vcpkg.exe"), "install", f"curl[core,schannel]:{triplet}", f"--x-install-root={installed}"], check=True)
+              with open(os.environ["GITHUB_ENV"], "a") as output: output.write(f"CURL_ROOT={installed / triplet}\n")
+              with open(os.environ["GITHUB_PATH"], "a") as output: output.write(f"{installed / triplet / 'bin'}\n")
+      - name: Build and package
+        shell: python
+        run: |
+          import json, os, pathlib, shutil, subprocess
+          project = os.environ["PROJECT"]
+          os.chdir(project)
+          windows = os.name == "nt"
+          if project == "agent-connector":
+              subprocess.run([shutil.which("deno"), "task", "compile"], check=True)
+          else:
+              jpm = shutil.which("jpm")
+              flags = "/nologo,/MD" if windows else "-std=c99"
+              if project == "zinc": flags += ",/DSQLITE_ENABLE_FTS5" if windows else ",-DSQLITE_ENABLE_FTS5"
+              subprocess.run([jpm, f"--cflags={flags}", "deps"], check=True)
+              subprocess.run([jpm, "install"], check=True)
+          if project == "zinc":
+              for source in pathlib.Path("src").glob("*.janet"):
+                  subprocess.run(["janet", "-k", str(source)], check=True)
+              subprocess.run([jpm, "run", "package"], check=True)
+          else:
+              version = json.loads(pathlib.Path("deno.json").read_text())["version"]
+              ref = os.environ["GITHUB_REF"]
+              if ref.startswith("refs/tags/") and ref != f"refs/tags/v{version}": raise SystemExit("tag mismatch")
+              root = pathlib.Path("dist") / f"{project}-v{version}-{os.environ['TARGET']}"
+              root.mkdir(parents=True)
+              executable = ("build/agent" if project == "portable-agents" else "dist/agc") + (".exe" if windows else "")
+              for path in [executable, "LICENSE", "README.md"]:
+                  shutil.copy2(path, root / pathlib.Path(path).name)
+              if project == "portable-agents":
+                  shutil.copy2("../janet/LICENSE", root / "JANET_LICENSE")
+                  if windows: shutil.copy2(pathlib.Path(os.environ["JANET_BINPATH"]) / "janet.dll", root / "janet.dll")
+              else:
+                  shutil.copy2("THIRD_PARTY_NOTICES.md", root)
+                  for directory in ["packaging", "examples"]: shutil.copytree(directory, root / directory)
+              shutil.make_archive(str(root), "zip" if windows else "gztar", root.parent, root.name)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: inputs.toolchain != ''
-        with: {
-          name: "janet-toolchain-${{ matrix.id }}",
-          path: "${{ runner.temp }}/toolchain.tar",
-          if-no-files-found: error,
-        }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: ${{ !inputs.toolchain && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}
         with:
-          name: agent-${{ matrix.id }}
-          path: |
-            ${{ runner.os == 'Windows' && 'portable-agents/build/agent.exe' || 'portable-agents/build/agent' }}
-            portable-agents/LICENSE
-            portable-agents/README.md
+          name: ${{ env.PROJECT }}-${{ matrix.id }}
+          path: ${{ env.PROJECT }}/dist/*-${{ matrix.id }}.*
           if-no-files-found: error
+  release:
+    if: ${{ !failure() && !cancelled() && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with: { persist-credentials: false }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: { pattern: "${{ env.PROJECT }}-*", path: artifacts, merge-multiple: true }
+      - name: Check release assets
+        working-directory: artifacts
+        run: |
+          [ "$(find . -maxdepth 1 -type f | wc -l)" -eq 6 ]
+          sha256sum ${{ env.PROJECT }}-* > SHA256SUMS
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with: { files: "artifacts/*", body_path: RELEASE_NOTES.md, overwrite_files: false }

@@ -1,5 +1,5 @@
 (import ../lib/portable-agents/protocol :as p)
-(import ../lib/portable-agents/markdown)
+(import ../lib/portable-agents/markdown :as md)
 (import spork/sh :as sh)
 (import spork/path :as path)
 (import portable-agents/host :as host)
@@ -23,6 +23,7 @@
   (unless (index-of (os/which) [:windows :mingw]) (os/sigaction :pipe (fn [])))
   (host/detach)
   (def [publish out log] (sinks (host/protocol-output)))
+  (md/register)
   (when-let [library (os/getenv "JANET_PATH")] (module/add-syspath library))
   (with-dyns [:pa/limits limits]
     (try

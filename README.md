@@ -16,12 +16,14 @@ jpm install
 deno task check
 ```
 
-Use `jpm --local` for a project-local installation. CI builds Linux, macOS and Windows on x86-64 and ARM64. Its reusable
-workflow exports the pinned toolchain through `workflow_call` with `toolchain: REVISION`.
+Use `jpm --local` for a project-local installation. Release archives cover Linux, macOS and Windows on x86-64 and ARM64;
+extract the matching archive and put `agent` on PATH. Unix archives preserve its executable permission. CI shares one
+native build/release workflow with Zinc and Connector; it does not transfer or relocate installed toolchains.
 
-The native worker embeds Janet and Spork's codecs. It needs neither Deno nor an external Janet interpreter. Markdown
-lazily loads the pinned Remarkable library from the normal Janet module path; set `JANET_PATH` before loading such a
-module. The parser is not embedded in the executable or loaded for plain Janet programs.
+The worker embeds Spork's codecs and needs neither Deno nor an external Janet interpreter. Unix builds embed Janet;
+official Windows builds share `janet.dll` with native modules. Keep it beside `agent.exe`, retain `JANET_LICENSE`, and
+install the matching Microsoft Visual C++ runtime. Markdown lazily loads Remarkable from `JANET_PATH`; its parser is not
+embedded or loaded for plain Janet programs. Zinc's runtime supplies the parser and application libraries.
 
 ## Programs
 
