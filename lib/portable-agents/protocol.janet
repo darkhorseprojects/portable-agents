@@ -29,7 +29,7 @@
 
 (defn json [value &opt decode]
   (def bytes (if decode value (native-json/encode value)))
-  (assert (and (bytes? bytes) (<= (+ (length bytes) (if decode 0 2)) ((dyn :pa/limits) "frameBytes")) (utf8/is-valid? bytes)) "TransportLimit")
+  (assert (and (bytes? bytes) (<= (+ (length bytes) (if decode 0 1)) ((dyn :pa/limits) "frameBytes")) (utf8/is-valid? bytes)) "TransportLimit")
   (if decode (native-json/decode bytes) (string bytes)))
 
 (defn send [io value]
@@ -85,7 +85,7 @@
                 "message" (if (and (dictionary? err) (string? (err :message))) (err :message) (if (string? err) err (string/format "%n" err)))})
   (when (dictionary? err)
     (each key [:detail :context] (when (err key) (put result (string key) (err key)))))
-  (def size (+ 2 (length (native-json/encode result))))
+  (def size (+ 1 (length (native-json/encode result))))
   (if (<= size ((dyn :pa/limits) "frameBytes")) result
     {"version" version "type" "error" "code" "ErrorTooLarge"
      "message" "Error exceeds frameBytes; increase the boundary limit." "context" {:bytes size}}))

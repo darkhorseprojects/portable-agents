@@ -133,7 +133,8 @@ jobs:
       - name: Build and package
         shell: python
         run: |
-          import json, os, pathlib, shutil, subprocess
+          import json, os, pathlib, shutil, subprocess, sys
+          os.environ["PYTHON"] = sys.executable
           project = os.environ["PROJECT"]
           os.chdir(project)
           windows = os.name == "nt"
