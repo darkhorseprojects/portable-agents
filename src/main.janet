@@ -9,8 +9,7 @@
   (var logging true)
   (defn publish [frame]
     (when observing
-      (def bytes (string (p/json frame) "\n"))
-      (try (do (file/write output bytes) (file/flush output)) ([err] (set observing false)))))
+      (try (p/send output frame) ([err] (set observing false)))))
   [publish
    (fn [bytes] (when observing (publish {"version" p/version "type" "stdout" "output" (p/base64 bytes)})))
    (fn [bytes] (when logging (try (do (file/write stderr bytes) (file/flush stderr)) ([err] (set logging false)))))])
@@ -22,6 +21,7 @@
                (number? (limits "admissionSeconds")) (< 0 (limits "admissionSeconds") math/inf)) "InvalidLimits")
   (unless (index-of (os/which) [:windows :mingw]) (os/sigaction :pipe (fn [])))
   (host/detach)
+  (markdown/register)
   (def [publish out log] (sinks (host/protocol-output)))
   (when-let [library (os/getenv "JANET_PATH")] (module/add-syspath library))
   (with-dyns [:pa/limits limits]
@@ -55,9 +55,5 @@
           (publish {"version" p/version "type" "ready"})
           (def result (with-env env (target input config)))
           (publish {"version" p/version "type" "result" "output" (p/base64 result)})))
-      ([err fiber]
-        (def trace @"")
-        (with-dyns [:err trace] (debug/stacktrace fiber))
-        (publish (p/failure (if (dictionary? err) (merge err {:detail (string (or (err :detail) "") "\n" trace)})
-                             {:code "ProgramError" :message (if (string? err) err (string/format "%n" err)) :detail (string trace)}))))))
+      ([err fiber] (publish (p/failure err fiber)))))
   (os/exit 0 true))

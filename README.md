@@ -65,6 +65,7 @@ The module's `document` binding contains ordered sections and lists:
 
 `(get-in document [:content 0 :content 0 :content 0 0])` reads the first item. Repeated headings retain their order.
 Inline formatting becomes plain text, links retain destinations, and nonexecuted code blocks retain language/text.
+`markdown/render` renders this document tree, text/content parts, and JSON metadata as readable Markdown.
 
 ## Worker and protocol
 

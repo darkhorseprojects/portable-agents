@@ -5,4 +5,5 @@
 - The stream-only SDK shares a bounded byte-level LineDecoder with application record consumers; Markdown registration
   runs once.
 - Connector releases retain versioned, external Janet libraries beside the executable.
+- Document rendering and structured diagnostics are shared by the worker and applications.
 - Wire protocol remains 1. No state management, instance registry or scheduler is added to PA.

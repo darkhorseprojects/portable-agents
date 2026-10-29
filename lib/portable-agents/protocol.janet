@@ -79,12 +79,17 @@
       (error (tabseq [[key value] :in (pairs terminal) :unless (index-of key ["version" "type"])] (keyword key) value)))
     (terminal "output")))
 
-(defn failure [err]
-  (def result @{"version" version "type" "error"
-                "code" (if (and (dictionary? err) (string? (err :code))) (err :code) "ProgramError")
-                "message" (if (and (dictionary? err) (string? (err :message))) (err :message) (if (string? err) err (string/format "%n" err)))})
-  (when (dictionary? err)
-    (each key [:detail :context] (when (err key) (put result (string key) (err key)))))
+(defn diagnostic [code err &opt fiber]
+  (def trace @"")
+  (when fiber (with-dyns [:err trace] (debug/stacktrace fiber)))
+  (def value (if (and (dictionary? err) (string? (err :code)) (string? (err :message))) err
+               {:code code :message (if (string? err) err (string/format "%n" err))}))
+  (merge value {:detail (string (or (value :detail) "") "\n" trace)}))
+
+(defn failure [err &opt fiber]
+  (def value (diagnostic "ProgramError" err fiber))
+  (def result @{"version" version "type" "error"})
+  (each key [:code :message :detail :context] (when (value key) (put result (string key) (value key))))
   (def size (+ 1 (length (native-json/encode result))))
   (if (<= size ((dyn :pa/limits) "frameBytes")) result
     {"version" version "type" "error" "code" "ErrorTooLarge"
