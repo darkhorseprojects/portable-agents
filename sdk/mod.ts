@@ -41,40 +41,59 @@ export function encodeRequest(
   return request;
 }
 
+export class LineDecoder {
+  readonly #buffer: ArrayBuffer;
+  readonly #decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+  constructor(maximumBytes: number) {
+    if (!Number.isInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 0x7fffffff) {
+      throw new AgentError("InvalidLimits", "Invalid frameBytes");
+    }
+    this.#buffer = new ArrayBuffer(0, { maxByteLength: maximumBytes });
+  }
+
+  *push(chunk: Uint8Array): Generator<string> {
+    for (let offset = 0; offset < chunk.length;) {
+      const newline = chunk.indexOf(10, offset);
+      const part = chunk.subarray(offset, newline < 0 ? chunk.length : newline);
+      const position = this.#buffer.byteLength;
+      const size = position + part.length;
+      if (size >= this.#buffer.maxByteLength) throw new AgentError("TransportLimit", "Frame exceeds frameBytes");
+      this.#buffer.resize(size);
+      new Uint8Array(this.#buffer).set(part, position);
+      offset = newline < 0 ? chunk.length : newline + 1;
+      if (newline < 0) break;
+      const line = this.#decoder.decode(this.#buffer);
+      this.#buffer.resize(0);
+      yield line;
+    }
+  }
+
+  finish(): void {
+    if (this.#buffer.byteLength) throw new AgentError("InvalidProtocol", "Partial frame");
+  }
+}
+
 export async function* decodeOutput(
   readable: ReadableStream<Uint8Array>,
   frameBytes: number,
   signal?: AbortSignal,
 ): AsyncGenerator<Event> {
-  if (!Number.isInteger(frameBytes) || frameBytes < 1 || frameBytes > 0x7fffffff) {
-    throw new AgentError("InvalidLimits", "Invalid frameBytes");
-  }
-  const encoder = new TextEncoder();
+  const lines = new LineDecoder(frameBytes);
   const fields: Record<string, readonly string[]> = {
     ready: [],
     stdout: ["output"],
     result: ["output"],
     error: ["code", "message"],
   };
-  let pending = "";
-  let bytes = 0;
   let ready = false;
   let terminal: Event | AgentError | undefined;
   for await (
-    const chunk of readable.pipeThrough(new TextDecoderStream("utf-8", { fatal: true, ignoreBOM: true }), { signal })
+    const chunk of readable.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), { signal })
   ) {
-    for (let offset = 0; offset < chunk.length;) {
+    for (const line of lines.push(chunk)) {
       if (terminal) throw new AgentError("InvalidProtocol", "Trailing terminal bytes");
-      const newline = chunk.indexOf("\n", offset);
-      const part = chunk.slice(offset, newline < 0 ? chunk.length : newline);
-      bytes += encoder.encode(part).length;
-      if (bytes >= frameBytes) throw new AgentError("TransportLimit", "Frame exceeds frameBytes");
-      pending += part;
-      offset = newline < 0 ? chunk.length : newline + 1;
-      if (newline < 0) break;
-      const raw = JSON.parse(pending);
-      pending = "";
-      bytes = 0;
+      const raw = JSON.parse(line);
       const required = Object.hasOwn(fields, raw?.type) && fields[raw.type];
       if (
         raw?.version !== 1 || !required ||
@@ -96,7 +115,8 @@ export async function* decodeOutput(
       }
     }
   }
-  if (pending || !terminal) throw new AgentError("InvalidProtocol", "Missing or partial terminal");
+  lines.finish();
+  if (!terminal) throw new AgentError("InvalidProtocol", "Missing terminal");
   if (terminal instanceof AgentError) throw terminal;
   yield terminal;
 }

@@ -165,6 +165,7 @@ jobs:
               else:
                   shutil.copy2("THIRD_PARTY_NOTICES.md", root)
                   for directory in ["packaging", "examples"]: shutil.copytree(directory, root / directory)
+                  shutil.copytree("dist/lib", root / "lib")
               shutil.make_archive(str(root), "zip" if windows else "gztar", root.parent, root.name)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

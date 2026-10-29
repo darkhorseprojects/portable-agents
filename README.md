@@ -100,8 +100,9 @@ wait for or control a process.
 
 ## TypeScript SDK
 
-The SDK exposes `Program`, `Event`, `AgentError`, `encodeRequest` and `decodeOutput`. The caller owns its process and
-streams:
+The SDK exposes `Program`, `Event`, `AgentError`, `encodeRequest`, `decodeOutput` and `LineDecoder`. The caller owns its
+process and streams. `LineDecoder.push(bytes)` yields bounded UTF-8 lines; `finish()` rejects a partial final line. Both
+transport decoding and application record consumers can use the same byte framing without re-encoding text:
 
 ```ts
 import { decodeOutput, encodeRequest } from "jsr:@darkhorseprojects/portable-agents";
