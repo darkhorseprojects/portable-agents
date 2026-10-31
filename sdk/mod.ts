@@ -1,8 +1,15 @@
+export interface ForeignImport {
+  readonly command: readonly string[];
+  readonly exports: Readonly<Record<string, string>>;
+  readonly timeoutSeconds?: number;
+}
+
 export interface Program {
   readonly sourceDir: string;
   readonly entryModule: string;
   readonly entry: string;
   readonly dependencies?: Readonly<Record<string, string>>;
+  readonly imports?: Readonly<Record<string, ForeignImport>>;
 }
 
 export type Event =
@@ -71,6 +78,58 @@ export class LineDecoder {
 
   finish(): void {
     if (this.#buffer.byteLength) throw new AgentError("InvalidProtocol", "Partial frame");
+  }
+}
+
+export async function serveImport(
+  readable: ReadableStream<Uint8Array>,
+  writable: WritableStream<Uint8Array>,
+  frameBytes: number,
+  invoke: (name: string, args: unknown[], operation?: string) => Promise<unknown>,
+): Promise<void> {
+  const encoder = new TextEncoder();
+  const writer = writable.getWriter();
+  try {
+    let bytes: Uint8Array;
+    try {
+      const lines = new LineDecoder(frameBytes);
+      let request;
+      for await (const chunk of readable) {
+        for (const line of lines.push(chunk)) {
+          if (request !== undefined) throw new AgentError("InvalidProtocol", "Trailing import request");
+          request = JSON.parse(line);
+        }
+      }
+      lines.finish();
+      if (
+        request?.version !== 1 || typeof request.export !== "string" || !request.export.isWellFormed() ||
+        !Array.isArray(request.arguments) || request.operation !== undefined &&
+          (typeof request.operation !== "string" || !request.operation.isWellFormed())
+      ) throw new AgentError("InvalidProtocol", "Invalid import request");
+      bytes = encoder.encode(
+        JSON.stringify({
+          version: 1,
+          type: "result",
+          value: await invoke(request.export, request.arguments, request.operation),
+        }) + "\n",
+      );
+    } catch (error) {
+      bytes = encoder.encode(
+        JSON.stringify({
+          version: 1,
+          type: "error",
+          code: error instanceof AgentError ? error.code : "ImportError",
+          message: error instanceof Error ? error.message : String(error),
+          detail: error instanceof AgentError ? error.detail : error instanceof Error ? error.stack : undefined,
+          context: error instanceof AgentError ? error.context : undefined,
+        }) + "\n",
+      );
+    }
+    if (bytes.length > frameBytes) throw new AgentError("TransportLimit", "Import outcome exceeds frameBytes");
+    await writer.write(bytes);
+    await writer.close();
+  } finally {
+    writer.releaseLock();
   }
 }
 

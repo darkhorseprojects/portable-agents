@@ -85,7 +85,7 @@ Stdin is one LF-terminated JSON request followed by EOF:
 ```
 
 `input`, `config` and output byte fields use Base64. Optional `program.dependencies` maps names to explicit library
-roots. `program.command` is not supported.
+roots. `program.command` is not supported. Admission bounds request receipt and loading, ending before execution.
 
 Protocol schema 1 uses bounded UTF-8 NDJSON: `ready`, `stdout`, terminal `result` or terminal `error`. Output records
 contain an `output` byte field; string and buffer payloads encode identically. Errors contain `code`, `message`, and
@@ -99,11 +99,35 @@ work use `os/spawn`; use `ev/` and `os/proc-wait` for concurrency and reaping. T
 reads/forwards stdout and returns terminal bytes; its optional readiness argument stops at `ready`. It does not create,
 wait for or control a process.
 
+## Foreign imports
+
+`program.imports` maps ordinary module names to command-backed exports. Source modules continue to use normal imports
+and dependency roots:
+
+```ts
+imports: {
+  peer: {
+    command: ["/trusted/host", "peer"],
+    exports: { self: "(peer/self request) invokes the configured peer." },
+    timeoutSeconds: 30,
+  },
+}
+```
+
+PA registers these modules through Janet's module resolver/cache before loading the entry module. A proxy launches one
+command per call and sends one bounded JSON line followed by EOF: `version: 1`, `export`, `arguments`, and optional
+`operation` from trusted `:pa/operation` metadata. A reply is one `version: 1` result frame with a JSON `value`, or an
+error frame with `code`, `message` and optional `detail`/`context`, followed by EOF. No Base64 copy or readiness round
+trip is needed for typed foreign values. Errors, EOF and process exit are checked; uncertain calls never retry. JSON
+null becomes Janet nil. Commands inherit the detached worker's lifetime, not the observer's. PA owns transport, not
+application permissions, credentials or request identity. Hosts must authorize calls before effects.
+
 ## TypeScript SDK
 
-The SDK exposes `Program`, `Event`, `AgentError`, `encodeRequest`, `decodeOutput` and `LineDecoder`. The caller owns its
-process and streams. `LineDecoder.push(bytes)` yields bounded UTF-8 lines; `finish()` rejects a partial final line. Both
-transport decoding and application record consumers can use the same byte framing without re-encoding text:
+The SDK exposes `Program`, `ForeignImport`, `Event`, `AgentError`, `encodeRequest`, `decodeOutput`, `serveImport` and
+`LineDecoder`. The caller owns its process and streams. `LineDecoder.push(bytes)` yields bounded UTF-8 lines; `finish()`
+rejects a partial final line. Both transport decoding and application record consumers can use the same byte framing
+without re-encoding text:
 
 ```ts
 import { decodeOutput, encodeRequest } from "jsr:@darkhorseprojects/portable-agents";
@@ -125,7 +149,9 @@ if (!status.success) throw new Error(`agent exited ${status.code}`);
 ```
 
 The decoder validates framing and EOF, not process exit. An optional abort signal cancels stream observation, never the
-process. Consumers must drain stderr as well.
+process. Consumers must drain stderr as well. Foreign hosts use
+`serveImport(stdin, stdout, frameBytes, async (name, args, operation) => value)`; PA validates framing and serializes
+outcomes. Keep protocol stdout separate from diagnostics.
 
 ## Lifetime and safety
 

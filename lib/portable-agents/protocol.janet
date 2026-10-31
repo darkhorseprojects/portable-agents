@@ -24,19 +24,31 @@
   (each [prefix path] (pairs dependencies)
     (assert (and (string? prefix) (not= "" prefix) (not (string/find "/" prefix)) (not (string/find "\0" prefix))
                  (string? path) (> (length path) 0) (not (string/find "\0" path))) "InvalidProgram"))
+  (def imports (get program "imports" {}))
+  (assert (dictionary? imports) "InvalidImports")
+  (each [name module] (pairs imports)
+    (assert (and (string? name) (> (length name) 0) (not (string/find "\0" name))) "InvalidImport")
+    (assert (and (dictionary? module) (indexed? (module "command")) (> (length (module "command")) 0)
+                 (dictionary? (module "exports"))) "InvalidImport")
+    (eachp [index part] (module "command")
+      (assert (and (string? part) (or (> index 0) (> (length part) 0)) (not (string/find "\0" part))) "InvalidImport"))
+    (each [name documentation] (pairs (module "exports"))
+      (assert (and (string? name) (> (length name) 0) (not (string/find "\0" name)) (string? documentation)) "InvalidImport"))
+    (def seconds (get module "timeoutSeconds" 0))
+    (assert (and (number? seconds) (<= 0 seconds) (< seconds math/inf)) "InvalidImport"))
   (each key ["input" "config"] (assert (string? (value key)) "InvalidProtocol"))
   value)
 
-(defn json [value &opt decode]
+(defn json [value &opt decode data]
   (def bytes (if decode value (native-json/encode value)))
   (assert (and (bytes? bytes) (<= (+ (length bytes) (if decode 0 1)) ((dyn :pa/limits) "frameBytes")) (utf8/is-valid? bytes)) "TransportLimit")
-  (if decode (native-json/decode bytes) (string bytes)))
+  (if decode (native-json/decode bytes data data) (string bytes)))
 
 (defn send [io value]
   (:write io (string (json value) "\n"))
   (when (get io :flush) (:flush io)))
 
-(defn reader [io &opt events] @{:io io :bytes @"" :events events})
+(defn reader [io &opt events data] @{:io io :bytes @"" :events events :data data})
 
 (defn receive [state]
   (def bound ((dyn :pa/limits) "frameBytes"))
@@ -52,7 +64,7 @@
   (when line
     (def bytes (string/slice (state :bytes) 0 line))
     (put state :bytes (buffer (string/slice (state :bytes) (+ line 1))))
-    (def value (json bytes true))
+    (def value (json bytes true (state :data)))
     (when (state :events)
       (def fields (or (get {"ready" [] "stdout" ["output"] "result" ["output"] "error" ["code" "message"]} (get value "type")) (error "InvalidProtocol")))
       (assert (= version (value "version")) "InvalidProtocol")
@@ -78,6 +90,29 @@
     (when (= "error" (terminal "type"))
       (error (tabseq [[key value] :in (pairs terminal) :unless (index-of key ["version" "type"])] (keyword key) value)))
     (terminal "output")))
+
+(defn import-module [module]
+  (tabseq [[name documentation] :in (pairs (module "exports"))]
+    (symbol name) @{:doc documentation :value (fn [& args]
+      (def child (os/spawn (module "command") :pd {:in :pipe :out :pipe :err stderr}))
+      (def exited (ev/chan 1))
+      (ev/go (fn [] (os/proc-wait child)) nil exited)
+      (defer (do (ev/close (child :in)) (ev/close (child :out)))
+        (def seconds (get module "timeoutSeconds" 0))
+        (ev/with-deadline (if (= seconds 0) math/inf seconds)
+          (def call @{:version version :export name :arguments args})
+          (when-let [operation (dyn :pa/operation)] (put call :operation operation))
+          (send (child :in) call)
+          (ev/close (child :in))
+          (def replies (reader (child :out) nil true))
+          (def frame (receive replies))
+          (assert (and (dictionary? frame) (= version (frame :version))) "InvalidImportOutcome")
+          (assert (not (receive replies)) "TrailingImportOutput")
+          (ev/take exited)
+          (when (= "error" (frame :type))
+            (error (tabseq [[key value] :pairs frame :unless (index-of key [:version :type])] key value)))
+          (assert (and (= "result" (frame :type)) (= 0 (child :return-code))) "ImportFailure; effects may have happened")
+          (frame :value))))}))
 
 (defn diagnostic [code err &opt fiber]
   (def trace @"")
