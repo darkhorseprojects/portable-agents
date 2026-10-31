@@ -113,6 +113,9 @@ export async function serveImport(
           value: await invoke(request.export, request.arguments, request.operation),
         }) + "\n",
       );
+      if (bytes.length > frameBytes) {
+        throw new AgentError("TransportLimit", "Import outcome exceeds frameBytes; effects may have happened");
+      }
     } catch (error) {
       bytes = encoder.encode(
         JSON.stringify({
