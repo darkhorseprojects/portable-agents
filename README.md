@@ -119,7 +119,8 @@ command per call and sends one bounded JSON line followed by EOF: `version: 1`, 
 `operation` from trusted `:pa/operation` metadata. A reply is one `version: 1` result frame with a JSON `value`, or an
 error frame with `code`, `message` and optional `detail`/`context`, followed by EOF. No Base64 copy or readiness round
 trip is needed for typed foreign values. Errors, EOF and process exit are checked; uncertain calls never retry. JSON
-null becomes Janet nil. Commands inherit the detached worker's lifetime, not the observer's. PA owns transport, not
+null becomes Janet nil. Import I/O yields the calling Janet fiber; other fibers can proceed without a separate
+promise or job API. Commands inherit the detached worker's lifetime, not the observer's. PA owns transport, not
 application permissions, credentials or request identity. Hosts must authorize calls before effects.
 
 ## TypeScript SDK
@@ -158,7 +159,8 @@ outcomes. Keep protocol stdout separate from diagnostics.
 Accepted execution survives caller death. POSIX workers create a separate session; a terminal process-group leader forks
 a worker and waits only to preserve its exit status. Windows workers detach from the console. Protocol stdout is private
 and non-inheritable; native stdout is redirected to stderr. Broken output and logging pipes do not abort accepted work.
-Closing observation is not application cancellation.
+Closing observation is not application cancellation. Synchronous output writes can still block on a live consumer
+that stops draining; broken-pipe tolerance is not slow-consumer isolation.
 
 The worker retains the entry's result until native task fibers settle, then emits the terminal frame. Uncaught task
 errors fail the invocation; returning from the entry does not discard spawned fibers. Programs must commit durable
