@@ -160,9 +160,10 @@ a worker and waits only to preserve its exit status. Windows workers detach from
 and non-inheritable; native stdout is redirected to stderr. Broken output and logging pipes do not abort accepted work.
 Closing observation is not application cancellation.
 
-Programs must commit durable outcomes before returning and join any local work whose completion matters. PA does not
-recover a dead executor or preserve a REPL heap across machine failure. Lost acknowledgment is not proof that work did
-not run. Applications own operation keys, cancellation and safe recovery. Supervisors must not terminate accepted
+The worker retains the entry's result until native task fibers settle, then emits the terminal frame. Uncaught task
+errors fail the invocation; returning from the entry does not discard spawned fibers. Programs must commit durable
+outcomes before completion. PA does not recover a dead executor or preserve a REPL heap across machine failure. Lost
+acknowledgment is not proof that work did not run. Applications own operation keys, cancellation and safe recovery. Supervisors must not terminate accepted
 workers through a containing job/cgroup. The invoker owns OS confinement and aggregate resource limits.
 
 The native codecs are Spork's MIT-licensed JSON, UTF-8 and Base64 implementations, Copyright (c) 2024 Janet
