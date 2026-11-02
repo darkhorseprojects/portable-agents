@@ -4,14 +4,28 @@
 (import spork/path :as path)
 (import portable-agents/host :as host)
 
-(defn- sinks [output]
-  (var observing true)
+(defn- sinks []
+  (def writes (ev/thread-chan 1))
+  (def ready (ev/thread-chan 1))
+  (ev/thread (fn [writes]
+    (def output (host/protocol-output))
+    (ev/give-supervisor :ready true)
+    (var observing true)
+    (var packet nil)
+    (while (set packet (ev/take writes))
+      (def [bytes reply] packet)
+      (when observing
+        (try (do (file/write output bytes) (file/flush output)) ([err] (set observing false))))
+      (ev/give reply observing))) writes :n ready)
+  (def [status value] (ev/take ready))
+  (assert (= status :ready) value)
   (var logging true)
   (defn publish [frame]
-    (when observing
-      (try (p/send output frame) ([err] (set observing false)))))
+    (def reply (ev/thread-chan 1))
+    (ev/give writes [(string (p/json frame) "\n") reply])
+    (ev/take reply))
   [publish
-   (fn [bytes] (when observing (publish {"version" p/version "type" "stdout" "output" (p/base64 bytes)})))
+   (fn [bytes] (publish {"version" p/version "type" "stdout" "output" (p/base64 bytes)}))
    (fn [bytes] (when logging (try (do (file/write stderr bytes) (file/flush stderr)) ([err] (set logging false)))))])
 
 (defn main [executable operation & args]
@@ -22,7 +36,7 @@
   (unless (index-of (os/which) [:windows :mingw]) (os/sigaction :pipe (fn [])))
   (host/detach)
   (markdown/register)
-  (def [publish out log] (sinks (host/protocol-output)))
+  (def [publish out log] (sinks))
   (when-let [library (os/getenv "JANET_PATH")] (module/add-syspath library))
   (with-dyns [:pa/limits limits]
     (def ready (ev/thread-chan 1))

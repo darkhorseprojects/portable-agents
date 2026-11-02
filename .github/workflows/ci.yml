@@ -143,7 +143,7 @@ jobs:
           else:
               jpm = shutil.which("jpm")
               flags = "/nologo,/MD" if windows else "-std=c99"
-              if project == "zinc": flags += ",/DSQLITE_ENABLE_FTS5" if windows else ",-DSQLITE_ENABLE_FTS5"
+              if project == "zinc": flags += ",/DSQLITE_ENABLE_FTS5,/DSQLITE_USE_URI=1" if windows else ",-DSQLITE_ENABLE_FTS5,-DSQLITE_USE_URI=1"
               subprocess.run([jpm, f"--cflags={flags}", "deps"], check=True)
               subprocess.run([jpm, "install"], check=True)
           if project == "zinc":

@@ -119,9 +119,9 @@ command per call and sends one bounded JSON line followed by EOF: `version: 1`, 
 `operation` from trusted `:pa/operation` metadata. A reply is one `version: 1` result frame with a JSON `value`, or an
 error frame with `code`, `message` and optional `detail`/`context`, followed by EOF. No Base64 copy or readiness round
 trip is needed for typed foreign values. Errors, EOF and process exit are checked; uncertain calls never retry. JSON
-null becomes Janet nil. Import I/O yields the calling Janet fiber; other fibers can proceed without a separate
-promise or job API. Commands inherit the detached worker's lifetime, not the observer's. PA owns transport, not
-application permissions, credentials or request identity. Hosts must authorize calls before effects.
+null becomes Janet nil. Import I/O yields the calling Janet fiber; other fibers can proceed without a separate promise
+or job API. Commands inherit the detached worker's lifetime, not the observer's. PA owns transport, not application
+permissions, credentials or request identity. Hosts must authorize calls before effects.
 
 ## TypeScript SDK
 
@@ -159,14 +159,17 @@ outcomes. Keep protocol stdout separate from diagnostics.
 Accepted execution survives caller death. POSIX workers create a separate session; a terminal process-group leader forks
 a worker and waits only to preserve its exit status. Windows workers detach from the console. Protocol stdout is private
 and non-inheritable; native stdout is redirected to stderr. Broken output and logging pipes do not abort accepted work.
-Closing observation is not application cancellation. Synchronous output writes can still block on a live consumer
-that stops draining; broken-pipe tolerance is not slow-consumer isolation.
+Closing observation is not application cancellation. Protocol writes run on a dedicated native I/O thread and yield only
+the publishing fiber. A stalled consumer cannot block another fiber or executor thread, but a program that prints from
+its executor still waits for that write. Applications must keep presentation outside execution; Zinc observers read the
+journal independently. Output remains ordered and bounded rather than buffered without limit.
 
 The worker retains the entry's result until native task fibers settle, then emits the terminal frame. Uncaught task
 errors fail the invocation; returning from the entry does not discard spawned fibers. Programs must commit durable
 outcomes before completion. PA does not recover a dead executor or preserve a REPL heap across machine failure. Lost
-acknowledgment is not proof that work did not run. Applications own operation keys, cancellation and safe recovery. Supervisors must not terminate accepted
-workers through a containing job/cgroup. The invoker owns OS confinement and aggregate resource limits.
+acknowledgment is not proof that work did not run. Applications own operation keys, cancellation and safe recovery.
+Supervisors must not terminate accepted workers through a containing job/cgroup. The invoker owns OS confinement and
+aggregate resource limits.
 
 The native codecs are Spork's MIT-licensed JSON, UTF-8 and Base64 implementations, Copyright (c) 2024 Janet
 contributors. Spork's path/shell modules are Copyright (c) 2019, 2022 Calvin Rose and contributors, MIT-licensed.
