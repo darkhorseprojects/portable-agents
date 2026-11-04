@@ -4,9 +4,8 @@
   "exports": "./sdk/mod.ts",
   "tasks": {
     "check": "deno fmt --check && deno lint && deno check --frozen sdk/mod.ts",
-    "format": "deno fmt",
-    "compile": "jpm build"
+    "format": "deno fmt"
   },
   "fmt": { "lineWidth": 120 },
-  "publish": { "include": ["sdk/mod.ts", "README.md", "LICENSE", "deno.json"] }
+  "publish": { "include": ["sdk/mod.ts", "README.md", "spec.md", "LICENSE", "deno.json"] }
 }
