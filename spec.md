@@ -27,6 +27,10 @@ finished.
 An `error` has an `error` object with string `code` and `message`, optional string `detail`, and optional object
 `context`. It ends the invocation. An error is not proof that previously admitted external effects did not occur.
 
+Forwarders preserve the originating diagnostic's code, message, detail, and context. Additional boundary information
+must not replace the originating failure with a generic description. Application-specific outcome and replay
+classification belongs to the application; it is not implied by the error envelope or process exit status.
+
 Envelope fields other than those listed are rejected. Operation-specific parameters and values are validated by their
 owner.
 
