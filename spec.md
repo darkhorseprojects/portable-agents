@@ -54,10 +54,4 @@ reconciliation before replay.
 Durability is an application property, not a protocol guarantee. Temporary sessions may lose their database, progress,
 and outcomes when the owning process is lost.
 
-## Installation and invocation
-
-Agents are source installations under the platform's agent directory. Other agents may be modified Git worktrees of that
-source. Runtimes, dependencies, and assets belong to their consuming installation. There is no shared runtime folder.
-
-The invoker determines the runtime from the configured source entry. There is no command-only manifest or required agent
-executable. Connector is an ordinary separately installed application, not an agent installation.
+Installation, runtime selection and capability transports outside this process boundary belong to applications.
