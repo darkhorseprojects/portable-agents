@@ -21,7 +21,9 @@ An `event` has a `value` and publishes intermediate application information. An 
 information, not transport fragments interpreted as execution state.
 
 A `result` has a `value` and ends the invocation. Returning an admission receipt does not imply background work
-finished.
+finished. Applications may publish committed operation outcomes as events before the invocation ends, while independent
+work continues. Concurrent operation scheduling, completion order and uncertainty recovery belong to the application;
+the framing protocol imposes no sibling-completion barrier.
 
 An `error` has an `error` object with string `code` and `message`, optional string `detail`, and optional object
 `context`. It ends the invocation. An error is not proof that previously admitted external effects did not occur.
