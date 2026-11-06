@@ -12,9 +12,8 @@ UTF-8, incomplete frames, unsupported envelopes, and trailing bytes are errors.
 
 Every message has `version` equal to 1 and a `type`.
 
-A `call` has a nonempty string `method` and a `params` value. An agent's parameters can contain its input and effective
-configuration. A capability's parameters can contain its argument array and stable application operation identity. Both
-are ordinary calls; there is no separate import transport.
+A `call` has a nonempty string `method` and a `params` value. The method owner defines its parameters. Capability
+transports outside this process boundary are application-defined.
 
 A `ready` has no additional fields. It means the method is loaded, not that work was durably accepted.
 
