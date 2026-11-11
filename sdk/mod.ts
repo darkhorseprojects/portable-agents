@@ -1,10 +1,18 @@
 export type Message =
-  | { readonly version: 1; readonly type: "call"; readonly method: string; readonly params: unknown }
+  | {
+    readonly version: 1;
+    readonly type: "call";
+    readonly id: string;
+    readonly method: string;
+    readonly params: unknown;
+  }
   | { readonly version: 1; readonly type: "ready" }
-  | { readonly version: 1; readonly type: "event" | "result"; readonly value: unknown }
+  | { readonly version: 1; readonly type: "event"; readonly value: unknown }
+  | { readonly version: 1; readonly type: "result"; readonly id: string; readonly value: unknown }
   | {
     readonly version: 1;
     readonly type: "error";
+    readonly id: string;
     readonly error: {
       readonly code: string;
       readonly message: string;
@@ -17,17 +25,20 @@ function message(value: unknown): Message {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid protocol message");
   const raw = value as Record<string, unknown>;
   const fields: Record<string, readonly string[]> = {
-    call: ["method", "params"],
+    call: ["id", "method", "params"],
     ready: [],
     event: ["value"],
-    result: ["value"],
-    error: ["error"],
+    result: ["id", "value"],
+    error: ["id", "error"],
   };
   const required = typeof raw.type === "string" && Object.hasOwn(fields, raw.type) && fields[raw.type];
   if (
     raw.version !== 1 || !required || required.some((key) => !Object.hasOwn(raw, key)) ||
     Object.keys(raw).some((key) => !["version", "type", ...required].includes(key))
   ) throw new Error("Invalid protocol envelope");
+  if (required.includes("id") && (typeof raw.id !== "string" || !raw.id || !raw.id.isWellFormed())) {
+    throw new Error("Invalid call identity");
+  }
   if (raw.type === "call" && (typeof raw.method !== "string" || !raw.method || !raw.method.isWellFormed())) {
     throw new Error("Invalid method");
   }
@@ -66,11 +77,8 @@ export async function* decode(
   }
   const buffer = new ArrayBuffer(0, { maxByteLength: maximumBytes });
   const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-  let ready = false;
-  let terminal: Message | undefined;
   for await (const chunk of readable) {
     for (let offset = 0; offset < chunk.length;) {
-      if (terminal) throw new Error("Trailing terminal bytes");
       const newline = chunk.indexOf(10, offset);
       const part = chunk.subarray(offset, newline < 0 ? chunk.length : newline);
       const position = buffer.byteLength;
@@ -81,30 +89,8 @@ export async function* decode(
       if (newline < 0) break;
       const value = message(JSON.parse(utf8.decode(buffer)));
       buffer.resize(0);
-      switch (value.type) {
-        case "call":
-          if (ready) throw new Error("Call in response stream");
-          terminal = value;
-          break;
-        case "ready":
-          if (ready) throw new Error("Duplicate readiness");
-          ready = true;
-          yield value;
-          break;
-        case "event":
-          if (!ready) throw new Error("Missing readiness");
-          yield value;
-          break;
-        case "result":
-          if (!ready) throw new Error("Missing readiness");
-          terminal = value;
-          break;
-        case "error":
-          terminal = value;
-      }
+      yield value;
     }
   }
   if (buffer.byteLength) throw new Error("Partial frame");
-  if (!terminal) throw new Error("Missing terminal message");
-  yield terminal;
 }

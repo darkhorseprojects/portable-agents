@@ -2,57 +2,44 @@
 
 ## Boundary
 
-Protocol version is 1. One process invocation accepts one call on stdin, followed by EOF. It responds on stdout.
-Diagnostics not intended as protocol messages go to stderr. No multiplexing or transport request ID is defined.
+Protocol version is 1. A process connection accepts calls on stdin until EOF and responds on stdout. Diagnostics not
+intended as protocol messages go to stderr. Calls may overlap on one connection.
 
 Each message is a UTF-8 JSON object terminated by one newline. The configured byte limit includes that newline. Invalid
-UTF-8, incomplete frames, unsupported envelopes, and trailing bytes are errors.
+UTF-8, incomplete frames, unsupported envelopes and oversized frames are errors. A complete frame is available
+immediately; it does not wait for connection EOF.
 
 ## Messages
 
-Every message has `version` equal to 1 and a `type`.
+Every message has `version` equal to 1 and a `type`. Other envelope fields are rejected.
 
-A `call` has a nonempty string `method` and a `params` value. The method owner defines its parameters. Capability
-transports outside this process boundary are application-defined.
+- `ready`: no additional fields. The process is loaded, not necessarily configured or durably initialized.
+- `call`: nonempty string `id`, nonempty string `method`, and `params`.
+- `event`: `value`, containing application-defined identities and committed information.
+- `result`: the call's `id` and its `value`.
+- `error`: the call's `id` and an `error` object with string `code` and `message`, optional string `detail`, and
+  optional object `context`. Other diagnostic fields are rejected.
 
-A `ready` has no additional fields. It means the method is loaded, not that work was durably accepted.
+The process sends readiness once, before events or responses. A caller chooses a distinct ID for every call on that
+connection. Each call receives exactly one result or error with the same ID. Responses may arrive in any order. Events
+are application publications, not fragments of a call's terminal response. The codec validates framing and envelopes;
+the connection owner enforces readiness and call correlation.
 
-An `event` has a `value` and publishes intermediate application information. An observer should publish committed
-information, not transport fragments interpreted as execution state.
+Forwarders preserve originating diagnostic fields. An error or process exit is not proof that admitted external effects
+did not occur. Transport IDs have no persistent meaning and do not deduplicate work.
 
-A `result` has a `value` and ends the invocation. Returning an admission receipt does not imply background work
-finished. Applications may publish committed operation outcomes as events before the invocation ends, while independent
-work continues. Concurrent operation scheduling, completion order and uncertainty recovery belong to the application;
-the framing protocol imposes no sibling-completion barrier.
+## Lifetime and ownership
 
-An `error` has an `error` object with string `code` and `message`, optional string `detail`, and optional object
-`context`. It ends the invocation. An error is not proof that previously admitted external effects did not occur.
+EOF ends the connection. A partial frame is invalid. The caller fails unresolved calls if the process or connection
+ends. Closing an individual call's observation does not request work cancellation. Applications define explicit
+cancellation and work identities separately from transport IDs.
 
-Forwarders preserve the originating diagnostic's code, message, detail, and context. Additional boundary information
-must not replace the originating failure with a generic description. Application-specific outcome and replay
-classification belongs to the application; it is not implied by the error envelope or process exit status.
+Returning an admission does not imply completion. Root outcomes, descendant execution, final settlement and world
+publication may have distinct boundaries. The application owns their ordering and concurrency.
 
-Envelope fields other than those listed are rejected. Operation-specific parameters and values are validated by their
-owner.
+The host owns its process and stops it on exit. There is no detached-execution or execution-durability promise in PA.
+Applications may retain explicitly persistent work; temporary sessions disappear with their host. Interrupted external
+effects may require reconciliation, not automatic replay.
 
-## Lifecycle
-
-A request is exactly one call followed by EOF.
-
-A response is ready, zero or more events, and exactly one result or error, followed by EOF. Initialization may fail with
-an error before readiness. Calls cannot appear in responses; duplicate readiness, missing termination, and trailing data
-are errors.
-
-A decoder must consume EOF before accepting a request or terminal response. Closing observation does not request
-cancellation. Process supervision, cancellation, timeout policy, and authority are not inferred from the wire lifecycle.
-
-## Durable operations
-
-Applications distinguish admission, execution, committed publication, and observation. Stable application identities
-deduplicate work; transport frames do not provide exactly-once execution. Interrupted external operations may need
-reconciliation before replay.
-
-Durability is an application property, not a protocol guarantee. Temporary sessions may lose their database, progress,
-and outcomes when the owning process is lost.
-
-Installation, runtime selection and capability transports outside this process boundary belong to applications.
+Installation, runtime selection, authority, scheduling and capability transports belong to applications. This connection
+lifecycle replaces the former one-call-and-EOF lifecycle; no compatibility mode exists.

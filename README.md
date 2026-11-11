@@ -1,21 +1,33 @@
 # Portable Agents
 
-Portable Agents defines a process-boundary protocol and its TypeScript codec. Applications own invocation, authority,
-execution, delivery and persistence. See [the specification](spec.md).
+Portable Agents supplies bounded process framing and envelopes. Applications own processes, authority, execution,
+delivery and persistence. See [the specification](spec.md).
 
-The SDK exports `Message`, `encode` and `decode` from `sdk/mod.ts`.
+TypeScript exports `Message`, `encode(message, maximumBytes)` and `decode(readable, maximumBytes)` from `sdk/mod.ts`.
+Decode yields complete envelopes immediately on a live connection. The connection owner checks readiness and correlates
+overlapping calls by their connection-local IDs.
 
-- `Message` is the version-1 union of call, ready, event, result and error envelopes.
-- `encode(message, maximumBytes)` validates a message and returns one UTF-8 JSON line, including its final newline in
-  the byte limit.
-- `decode(readable, maximumBytes)` yields validated envelopes. It checks chunk boundaries, UTF-8, frame bounds,
-  lifecycle order, EOF and trailing data. Calls and terminal responses are withheld until EOF; events stream
-  immediately.
+Install the Janet package independently with JPM, using its configured system or user module directory:
 
-Application parameters, result values and replay decisions are not protocol state. The codec owns no process, scheduler
-or database and does not provide execution durability. Applications may use other transports for their internal
-services.
+```sh
+jpm install https://github.com/darkhorseprojects/portable-agents.git
+```
 
-## Development
+JPM installs PA and its declared dependencies. Do not copy PA into an agent or use another application's dependency
+tree. Standard JPM module-path configuration applies on Linux, macOS and Windows.
 
-Run `deno task check` for formatting, lint and TypeScript checks. There is no native build.
+```janet
+(import pa)
+(def pending @"")
+(def call (pa/read stdin pending 1048576))
+(pa/write stdout {:version 1 :type "result" :id (call :id) :value :null} 1048576)
+```
+
+`pa/read` accepts a file or readable stream and a connection-local buffer. It returns nil at clean EOF; `pa/write`
+accepts a writable file or stream. Both validate envelopes, UTF-8 and frame bounds. Blocking file IO belongs on an IO
+thread when an application also runs an event loop.
+
+Neither implementation owns a scheduler, database, installer or process manager. Deno uses its normal package cache for
+the TypeScript module; JPM uses its normal installation paths for Janet.
+
+Run `deno task check` for formatting, lint and TypeScript checks.
