@@ -1,5 +1,8 @@
 # Release notes
 
+Handle provisioning and configuration formats belong to connection owners. The specification no longer prescribes UUID
+generation or ac.yaml storage. Envelopes and codecs are unchanged; no agent executable or profile field is required.
+
 PA uses fixed, unversioned envelopes in both directions. Readiness identifies the loaded author; calls carry the
 authenticated caller, binding name, argument value and optional flat binding documentation. Connection owners enforce
 readiness and directional correlation. Handles do not authenticate callers or preserve permissions.

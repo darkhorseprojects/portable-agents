@@ -34,10 +34,11 @@ not author identities, work identities, persistent deduplication keys or cancell
 
 ## Authors and authority
 
-`handle` and `caller` use the same nonempty string representation. No prefix is required. An agent's own definition is
-authoritative: generate a UUIDv4 once when its handle is absent and save it in that agent's `ac.yaml`. Importers load
-that definition without overriding it. Reject conflicting resolved definitions. Users retain authenticated provider
-identities. Newly authored agent actions use the agent's handle; forwarding an existing call preserves its caller.
+`handle` and `caller` use the same nonempty string representation. No prefix is required. The connection owner supplies
+the agent's authoritative handle and verifies that readiness advertises it. Handles must remain stable when persisted
+authorship is retained. Importers must not replace a target's handle. Handle provisioning, persistence and configuration
+formats are outside this protocol. Users retain authenticated provider identities. Newly authored agent actions use the
+agent's handle; forwarding an existing call preserves its caller.
 
 A handle identifies an author; possession of its text does not authenticate anyone. Connection owners authenticate the
 source and decide which callers it may assert. Renames, moves and credential changes do not change authorship or
