@@ -1,16 +1,16 @@
 export type Message =
   | {
-    readonly version: 1;
     readonly type: "call";
     readonly id: string;
+    readonly caller: string;
     readonly method: string;
     readonly params: unknown;
+    readonly imports?: Readonly<Record<string, string>>;
   }
-  | { readonly version: 1; readonly type: "ready" }
-  | { readonly version: 1; readonly type: "event"; readonly value: unknown }
-  | { readonly version: 1; readonly type: "result"; readonly id: string; readonly value: unknown }
+  | { readonly type: "ready"; readonly handle: string }
+  | { readonly type: "event"; readonly value: unknown }
+  | { readonly type: "result"; readonly id: string; readonly value: unknown }
   | {
-    readonly version: 1;
     readonly type: "error";
     readonly id: string;
     readonly error: {
@@ -25,22 +25,32 @@ function message(value: unknown): Message {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid protocol message");
   const raw = value as Record<string, unknown>;
   const fields: Record<string, readonly string[]> = {
-    call: ["id", "method", "params"],
-    ready: [],
+    call: ["id", "caller", "method", "params"],
+    ready: ["handle"],
     event: ["value"],
     result: ["id", "value"],
     error: ["id", "error"],
   };
   const required = typeof raw.type === "string" && Object.hasOwn(fields, raw.type) && fields[raw.type];
+  const optional = raw.type === "call" ? ["imports"] : [];
   if (
-    raw.version !== 1 || !required || required.some((key) => !Object.hasOwn(raw, key)) ||
-    Object.keys(raw).some((key) => !["version", "type", ...required].includes(key))
+    !required || required.some((key) => !Object.hasOwn(raw, key)) ||
+    Object.keys(raw).some((key) => !["type", ...required, ...optional].includes(key))
   ) throw new Error("Invalid protocol envelope");
-  if (required.includes("id") && (typeof raw.id !== "string" || !raw.id || !raw.id.isWellFormed())) {
-    throw new Error("Invalid call identity");
+  for (const key of ["id", "caller", "method", "handle"]) {
+    const text = raw[key];
+    if (required.includes(key) && (typeof text !== "string" || !text || !text.isWellFormed())) {
+      throw new Error(`Invalid ${key}`);
+    }
   }
-  if (raw.type === "call" && (typeof raw.method !== "string" || !raw.method || !raw.method.isWellFormed())) {
-    throw new Error("Invalid method");
+  if (Object.hasOwn(raw, "imports")) {
+    const imports = raw.imports;
+    if (
+      !imports || typeof imports !== "object" || Array.isArray(imports) ||
+      Object.entries(imports).some(([name, documentation]) =>
+        !name || !name.isWellFormed() || typeof documentation !== "string" || !documentation.isWellFormed()
+      )
+    ) throw new Error("Invalid imports");
   }
   if (raw.type === "error") {
     const error = raw.error as Record<string, unknown> | null;

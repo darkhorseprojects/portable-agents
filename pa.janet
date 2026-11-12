@@ -3,18 +3,26 @@
 
 (defn- envelope [value]
   (assert (dictionary? value) "invalid protocol message")
-  (def fields (get {"call" [:id :method :params] "ready" [] "event" [:value]
+  (def fields (get {"call" [:id :caller :method :params] "ready" [:handle] "event" [:value]
                    "result" [:id :value] "error" [:id :error]} (value :type)))
-  (assert (and fields (= 1 (value :version))
-    (deep= (sorted (keys value)) (sorted (array/concat @[:version :type] fields)))) "invalid protocol envelope")
-  (each key (filter |(index-of $ fields) [:id :method])
+  (def optional (if (= "call" (value :type)) [:imports] []))
+  (assert (and fields (every? (map |(has-key? value $) fields))
+    (every? (map |(index-of $ (array/concat @[:type] fields optional)) (keys value)))) "invalid protocol envelope")
+  (each key (filter |(index-of $ fields) [:id :caller :method :handle])
     (assert (and (string? (value key)) (> (length (value key)) 0) (utf8/is-valid? (value key))) "invalid protocol identity"))
+  (when (has-key? value :imports)
+    (assert (dictionary? (value :imports)) "invalid imports")
+    (each [name documentation] (pairs (value :imports))
+      (assert (and (or (string? name) (keyword? name)) (> (length (string name)) 0)
+        (utf8/is-valid? (string name)) (string? documentation) (utf8/is-valid? documentation)) "invalid imports")))
   (when (= "error" (value :type))
     (def diagnostic (value :error))
     (assert (and (dictionary? diagnostic) (string? (diagnostic :code)) (string? (diagnostic :message))
       (every? (map |(index-of $ [:code :message :detail :context]) (keys diagnostic)))
       (or (not (has-key? diagnostic :detail)) (string? (diagnostic :detail)))
-      (or (not (has-key? diagnostic :context)) (dictionary? (diagnostic :context)))) "invalid diagnostic"))
+      (or (not (has-key? diagnostic :context)) (dictionary? (diagnostic :context)))) "invalid diagnostic")
+    (each key [:code :message :detail]
+      (when (has-key? diagnostic key) (assert (utf8/is-valid? (diagnostic key)) "invalid diagnostic"))))
   value)
 
 (defn read

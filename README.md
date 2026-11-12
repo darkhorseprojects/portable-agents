@@ -5,7 +5,8 @@ delivery and persistence. See [the specification](spec.md).
 
 TypeScript exports `Message`, `encode(message, maximumBytes)` and `decode(readable, maximumBytes)` from `sdk/mod.ts`.
 Decode yields complete envelopes immediately on a live connection. The connection owner checks readiness and correlates
-overlapping calls by their connection-local IDs.
+overlapping calls in both directions by their connection-local IDs. `ready.handle` and `call.caller` identify authors,
+not credentials. Calls may carry a flat `imports` documentation map; applications retain routing and authority.
 
 Install the Janet package independently with JPM, using its configured system or user module directory:
 
@@ -20,7 +21,7 @@ tree. Standard JPM module-path configuration applies on Linux, macOS and Windows
 (import pa)
 (def pending @"")
 (def call (pa/read stdin pending 1048576))
-(pa/write stdout {:version 1 :type "result" :id (call :id) :value :null} 1048576)
+(pa/write stdout {:type "result" :id (call :id) :value :null} 1048576)
 ```
 
 `pa/read` accepts a file or readable stream and a connection-local buffer. It returns nil at clean EOF; `pa/write`
