@@ -1,7 +1,8 @@
 # Portable Agents
 
 Portable Agents supplies bounded process framing and envelopes. Applications own processes, authority, execution,
-delivery and persistence. See [the specification](spec.md).
+delivery and persistence. Agents are Janet programs; the TypeScript codec is for hosts such as Connector. See
+[the wire specification](spec.md) and the separate [Connector application interaction contract](interaction.md).
 
 TypeScript exports `Message`, `encode(message, maximumBytes)` and `decode(readable, maximumBytes)` from `sdk/mod.ts`.
 Decode yields complete envelopes immediately on a live connection. The connection owner checks readiness and correlates

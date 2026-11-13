@@ -2,6 +2,10 @@
 
 ## Boundary
 
+Deployed agents are Janet programs. This is a deployment convention, not an envelope field. Connector's optional
+[application interaction contract](interaction.md) is separate from this wire protocol and does not define Zinc
+execution.
+
 PA is a fixed, unversioned, bidirectional connection. A process reads stdin until EOF and writes stdout. Diagnostics
 outside the protocol go to stderr. Calls may overlap in either direction.
 

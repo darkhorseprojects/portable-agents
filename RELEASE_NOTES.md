@@ -1,5 +1,9 @@
 # Release notes
 
+The separate Connector application interaction contract documents profile discovery, opaque work/navigation/cursors and
+committed output. All deployed agents are Janet programs. PA's envelopes and both codecs remain unchanged; no execution
+schema, scheduler, version field or Zinc-specific work model is added to the wire protocol.
+
 Handle provisioning and configuration formats belong to connection owners. The specification no longer prescribes UUID
 generation or ac.yaml storage. Envelopes and codecs are unchanged; no agent executable or profile field is required.
 
