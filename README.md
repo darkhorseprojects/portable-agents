@@ -45,9 +45,15 @@ PA adopts the home-directory `.agents` convention for user agent installations:
 | Windows                      | `%USERPROFILE%\.agents\`                  |
 | WSL                          | `~/.agents/` in the WSL user's Linux home |
 
-Install each agent in its own named directory, such as `~/.agents/zinc/`. That directory contains the agent's entry
-source, supporting modules, resources, configuration and private instance state. Its name does not define its durable
-author handle.
+Install each agent's repository into its own named directory, such as `~/.agents/zinc/`. The installed agent is that
+checkout: preserve the repository's files and directory structure, build there, and run its normal entry point. Do not
+flatten sources or assemble a separate runtime distribution. There are no separate development and runtime install
+layouts.
+
+A clone or linked Git worktree may supply the checkout; this does not change installation or execution. Additional
+agents may use additional clones or worktrees. Each has its own configuration and private instance state; generated
+files and private state should be ignored by Git. A new agent gets a new author handle and store. Moving an existing
+agent preserves its handle and state. Directory names and Git branches do not define author identity.
 
 The `.agents` location is an emerging cross-tool convention, not an OS-defined directory or a claim of compatibility
 with another project's contents. See the [.agents draft](https://dotagentsprotocol.com/) and
