@@ -1,81 +1,88 @@
-# Connector application interaction
+# Application interaction
 
-This is an application convention carried over PA, not an extension to PA envelopes. PA codecs do not validate it. The
-deployed agents are Janet programs. Connector remains a TypeScript host; it does not interpret their execution state.
+An optional application convention over PA. Codecs validate envelopes, not this contract. Applications own execution,
+work authorization, recovery, and presentation meaning. Hosts own connections, routing, and delivery.
 
-## Configuration and discovery
+## Discovery
 
-The connection owner calls `app/open` with `settings` and an optional `initialize` boolean. `settings` contains opaque
-application `config`, named application `profiles`, and the default `profile` name. Connector expands only its own
-`${instance}` and `${directory}` variables. Applications validate settings and own initialization. The PA call's
-`imports` map documents separately authorized external bindings.
+The owner calls `app/open` with `settings` and optional `initialize`. Settings contain opaque application `config`,
+named `profiles`, and the default `profile`. The call's `imports` documents separately authorized bindings.
 
-The result contains `profiles`, mapping each configured name to:
+The result's `profiles` maps each name to:
 
-- `inputs`: supported input kinds, `text` and/or `code`. Code is Janet source.
-- `retain`: whether Connector should retain this profile's session and delivery metadata.
-- `history`: maximum source records accepted in one intake batch.
-- `parameters`: user-exposed submission option descriptions.
-- `commands`: application commands with `name`, `description`, and `parameters`.
+- `inputs`: supported kinds, `text` and/or `code` (Janet source).
+- `retain`: whether the host persists session and delivery metadata.
+- `history`: maximum source records per intake batch.
+- `parameters`: submission option descriptions.
+- `commands`: declarations with `name`, `description`, and `parameters`.
 
-Parameters contain `name`, `description`, `type` (`string`, `integer`, `number`, `boolean`), and optional `default`,
-`minimum`, `maximum`, `choices`, and `autocomplete`. An autocomplete value names an application command, not a provider.
-Descriptions supply an interface, not authority. Applications revalidate all arguments. Profiles are configurations of
-one application, not separate agents.
+Parameters have `name`, `description`, `type` (`string`, `integer`, `number`, `boolean`), and optional `default`,
+`minimum`, `maximum`, `choices`, and `autocomplete`. Autocomplete names an application command; the query is sent in
+`arguments.query`. Applications revalidate arguments. Descriptions grant no authority.
 
-`app/open` and `app/observe` are owner-only. Opening an initialized application may recover its work immediately;
-observation neither starts nor cancels work.
+`app/open` and `app/observe` are owner-only. Opening may recover work immediately. Observation never starts or cancels
+it.
 
 ## Calls
 
-Application calls carry the selected `profile`. Work references and navigation `state` are opaque JSON values.
+Calls carry `profile`. Work references and navigation `state` are opaque JSON values, compared structurally, not parsed.
 
-- `app/submit`: `request`, `input`, optional `options`, `state`, and `context`. Input contains exactly one of `text` or
-  `code`, optional `at`, `records`, and `images`. Images contain MIME `type` and base64 `data`. Source records contain
-  `key`, `author`, `at`, and `text`. Returns `work` and optional replacement `state`.
-- `app/append`: `records` and `state`. Adds source information without executing it. Returns optional replacement
-  `state`.
-- `app/read`: `work` and optional `wait` boolean. Returns the application's opaque terminal result, or null while
-  pending. A waiting observation does not own the work's lifetime.
-- `app/cancel`: `work`. Requests application-defined cancellation, never rollback of external actions.
-- `app/command`: `command`, `arguments`, optional `state`, `options`, and `context`. Returns optional `value`, `work`,
-  and replacement `state`. With `completion: true`, returns `choices` containing string `name`/`value` pairs. Connector
-  sends the completion query in `arguments.query`.
-- `app/observe`: `cursors`, an object mapping opaque stream names to opaque output cursors. Starts ordered replay and
-  live observation. Missing streams start at their beginning. Unknown cursors fail explicitly.
+- `app/submit`: `request`, `input`, optional `options`, `state`, `context`. Input has exactly one of `text` or `code`,
+  optional `at`, `records`, `images`. Records have `key`, `author`, `at`, `text`; images have MIME `type` and base64
+  `data`. Returns `work` and optional replacement `state`.
+- `app/append`: `records`, `state`. Adds evidence without executing it; returns optional replacement `state`.
+- `app/read`: `work`, optional `wait`. Returns an opaque terminal result, or null while pending.
+- `app/cancel`: `work`. Requests cancellation, never rollback.
+- `app/command`: `command`, `arguments`, optional `state`, `options`, `context`. Returns optional `value`, `work`,
+  `state`. With `completion: true`, returns `choices` of string `name`/`value` pairs.
+- `app/observe`: `cursors`, mapping stream names to opaque cursors. Replaces observation with ordered replay and live
+  output after each cursor. Missing streams start at the beginning. Unknown cursors fail.
 
-`request` is a persistent application deduplication key, not a PA call ID. Reusing it for different input is an error.
-The application defines completion, concurrency, durability, and work authorization. These are not inferred by
-Connector.
+`request` is a persistent deduplication key, not a PA call ID. Reuse with different input fails. Waiting does not own
+work.
 
-## Output
+## Presentation stream
 
-A PA `event.value` contains:
+Each `event.value` has `stream`, `cursor`, `work`, `retain`, optional routing-ticket `context`, optional replacement
+navigation `state`, and `output`. Streams are ordered. Cursors are saved and returned unchanged, never compared
+numerically.
+
+Content updates contain:
 
 ```text
-stream: opaque string
-cursor: opaque string
-context: optional opaque routing-ticket string
-work: opaque JSON work reference
-state: optional replacement navigation state
-retain: boolean
-output:
-  id: stable string
-  text: string
-  reply: optional output ID
-  language: optional string
-  footer: optional application-authored text
+id: stable message ID within the stream
+revision: integer, starting at zero and increasing by one per update
+type: response | reasoning | tool-call | tool-result
+format: markdown | quote | code | json
+text: appended text, not a cumulative snapshot
+done: whether this presentation message is complete
+language: optional code language label
+reply: optional message ID in the same stream
 ```
 
-An application publishes only committed output. Streams are ordered; cursors are saved and returned unchanged, never
-compared numerically. Output IDs deduplicate delivery. Connector stages output before advancing observation. Delivery
-attempts without receipts are uncertain and must not be automatically repeated.
+Metadata updates contain only `id`, `revision`, `type: metadata`, and `text`, an application-authored single-line footer
+of at most 1,000 characters. They replace the footer, not content. Metadata requires an open message and precedes its
+closing update. It is published once per application loop boundary or tool/effect-result boundary, never per token or
+transport split. Coincident boundaries may share one footer.
 
-Connector issues routing tickets and owns their authenticated source, destination, profile, deployment and expiry.
-Applications retain and echo the opaque ticket; they do not authorize Discord destinations. Output without a ticket is
-observable but has no Discord destination. A recursive computation may inherit its caller's ticket. Connector changes
-selected navigation only for the exact opaque work returned by the corresponding admission, not its descendants.
+A message's content type, format, language, reply, work, context, and retention cannot change. Closed messages cannot be
+updated. A nonstreaming message is one content update with `done: true`. Already-applied revisions are ignored on
+replay; revision gaps fail. Distinct messages may interleave. Applications publish only committed updates.
 
-Connector owns text splitting, attachments, and delivery receipts. Applications own language labels, optional footers,
-and their internal presentation meaning. No path, inquiry, round, world, event-ID range, or database schema belongs to
-this interaction contract.
+A host saves unfinished buffers, delivery parts, and their cursors in the same durable snapshot. Unsaved deltas replay
+from the previous saved cursor after restart. It sends only at explicit message completion, application loop termination
+(expressed by closing its messages), or destination-size splits. There are no timer or paragraph-triggered sends. Split
+at safe paragraph, line, or word boundaries; include all formatting and footer overhead. Unfinished syntax stays
+buffered. Indivisible oversized constructs become attachments, not broken markup. JSON is parsed only when complete.
+Message completion does not imply work completion.
+
+## Routing and delivery
+
+Hosts issue opaque routing tickets and own their authenticated source, destination, profile, deployment, and expiry.
+Applications echo tickets; they do not authorize destinations. Child work may inherit a ticket. Output without one is
+observable but has no delivery destination. Only the exact admitted work may update selected navigation, not
+descendants.
+
+Hosts own splitting, attachments, ordering, and delivery receipts. Attempts without receipts are uncertain and must not
+be automatically repeated. Applications own public content, language labels, and footer wording; hosts do not interpret
+internal execution references, loop labels, or status text. Ending observation does not cancel work.
