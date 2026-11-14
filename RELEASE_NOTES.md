@@ -1,8 +1,5 @@
 # Release notes
 
-The optional application interaction contract defines profile discovery, opaque work and navigation, ordered output,
-append-only presentation updates, and boundary metadata. It does not extend PA envelopes or change either codec.
-
-Connection owners provision handles, authenticate callers, authorize imports, and own process lifetime. Applications own
-execution and persistence. Transport IDs grant neither work identity nor safe replay. No version or schema number
-changed.
+The optional application contract uses RAM-only navigation and overrides. Commands cannot admit work; observation can
+attach live without replay. Command replies support content format and language. Retention flags and durable
+host-delivery requirements are removed. Wire envelopes and both codecs are unchanged.

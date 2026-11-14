@@ -1,27 +1,19 @@
 # Portable Agents
 
-Bounded, bidirectional JSON messages over a process connection. Applications own authentication, dispatch, process
-lifetime, execution, delivery, and persistence.
-
-## Install
-
-Install the local Janet checkout into JPM's normal shared module directory:
+Bounded JSON messages over a bidirectional process connection.
 
 ```sh
 jpm deps
 jpm install
 ```
 
-Set `JANET_PATH` if that directory is not the runtime default. Do not copy the library into an agent checkout.
+Install into the shared Janet module directory; set `JANET_PATH` if needed. Do not copy the module into agent checkouts.
 
-## API
-
-- Janet: `pa/read(stream, pending, maximum-bytes)` and `pa/write(stream, message, maximum-bytes)`.
+- Janet: `pa/read(stream, pending, maximum-bytes)`, `pa/write(stream, message, maximum-bytes)`.
 - TypeScript: `Message`, `encode(message, maximumBytes)`, `decode(readable, maximumBytes)` from `sdk/mod.ts`.
 
-Readers yield complete frames immediately, without waiting for EOF. Both codecs validate envelopes, UTF-8, and byte
-limits. Owners verify readiness and correlate overlapping calls in both directions. Handles identify authors, not
-credentials; transport IDs do not identify durable work or authorize replay.
+Codecs validate envelopes, UTF-8 frames, and byte limits. Readers yield complete frames immediately. Applications handle
+identity, dispatch, lifetime, and persistence. Handles identify authors; transport IDs only correlate calls.
 
-See [spec.md](spec.md) for the wire protocol and [interaction.md](interaction.md) for the optional application contract.
-Codecs do not interpret application events. Run `deno task check` for formatting, lint, and TypeScript checks.
+[spec.md](spec.md) defines the wire protocol; [interaction.md](interaction.md) defines optional application payloads.
+Run `deno task check` for formatting, lint, and type checks.

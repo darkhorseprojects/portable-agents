@@ -1,88 +1,80 @@
 # Application interaction
 
-An optional application convention over PA. Codecs validate envelopes, not this contract. Applications own execution,
-work authorization, recovery, and presentation meaning. Hosts own connections, routing, and delivery.
+Optional payloads over PA. Applications own durable work, authorization, and public output. Hosts own connections,
+routing, and delivery. Codecs validate envelopes, not this contract.
 
 ## Discovery
 
-The owner calls `app/open` with `settings` and optional `initialize`. Settings contain opaque application `config`,
-named `profiles`, and the default `profile`. The call's `imports` documents separately authorized bindings.
+The owner calls `app/open` with `settings` and optional `initialize`. Settings contain opaque `config`, named
+`profiles`, and default `profile`. Call-level `imports` documents separately authorized bindings. Opening may recover
+work.
 
-The result's `profiles` maps each name to:
-
-- `inputs`: supported kinds, `text` and/or `code` (Janet source).
-- `retain`: whether the host persists session and delivery metadata.
-- `history`: maximum source records per intake batch.
-- `parameters`: submission option descriptions.
-- `commands`: declarations with `name`, `description`, and `parameters`.
-
-Parameters have `name`, `description`, `type` (`string`, `integer`, `number`, `boolean`), and optional `default`,
-`minimum`, `maximum`, `choices`, and `autocomplete`. Autocomplete names an application command; the query is sent in
-`arguments.query`. Applications revalidate arguments. Descriptions grant no authority.
-
-`app/open` and `app/observe` are owner-only. Opening may recover work immediately. Observation never starts or cancels
-it.
+The result maps `profiles` to `inputs` (`text` and/or Janet `code`), `history` (maximum evidence batch), `parameters`,
+and `commands`. Commands declare `name`, `description`, and `parameters`. Parameters declare `name`, `description`,
+`type` (`string`, `integer`, `number`, `boolean`), and optional `default`, `minimum`, `maximum`, `choices`,
+`autocomplete`. Autocomplete names a command receiving `arguments.query`. Discovery grants no authority; applications
+revalidate input.
 
 ## Calls
 
-Calls carry `profile`. Work references and navigation `state` are opaque JSON values, compared structurally, not parsed.
+Calls carry `profile`. Work, navigation `state`, and cursors are opaque JSON values returned unchanged by hosts.
 
-- `app/submit`: `request`, `input`, optional `options`, `state`, `context`. Input has exactly one of `text` or `code`,
-  optional `at`, `records`, `images`. Records have `key`, `author`, `at`, `text`; images have MIME `type` and base64
-  `data`. Returns `work` and optional replacement `state`.
-- `app/append`: `records`, `state`. Adds evidence without executing it; returns optional replacement `state`.
-- `app/read`: `work`, optional `wait`. Returns an opaque terminal result, or null while pending.
-- `app/cancel`: `work`. Requests cancellation, never rollback.
-- `app/command`: `command`, `arguments`, optional `state`, `options`, `context`. Returns optional `value`, `work`,
-  `state`. With `completion: true`, returns `choices` of string `name`/`value` pairs.
-- `app/observe`: `cursors`, mapping stream names to opaque cursors. Replaces observation with ordered replay and live
-  output after each cursor. Missing streams start at the beginning. Unknown cursors fail.
+- `app/submit`: `request`, `input`, optional `options`, `state`, `context`; returns `work` and optional replacement
+  `state`.
+- `app/append`: `records`, `state`; adds evidence without execution and returns optional replacement `state`.
+- `app/read`: `work`, optional `wait`; returns a terminal result or null.
+- `app/cancel`: `work`; requests cancellation, never rollback.
+- `app/command`: `command`, `arguments`, optional `state`, `options`; returns optional `value`, replacement `state`,
+  `format`, and `language`.
+- `app/observe`: optional `cursors` mapping streams to cursors; starts ordered replay followed by live output.
 
-`request` is a persistent deduplication key, not a PA call ID. Reuse with different input fails. Waiting does not own
-work.
+Input has exactly one of `text` or `code`, optional `at`, `records`, `images`, and application-defined selectors.
+Records contain `key`, `author`, `at`, `text`; images contain MIME `type` and base64 `data`. `request` persistently
+deduplicates work; reuse with different input fails. PA call IDs do not identify work.
 
-## Presentation stream
+Commands only read data or replace RAM navigation, never admit work or mutate durable state. `format` uses the content
+formats below; `language` labels code. With `completion: true`, return `choices` of string `name`/`value` pairs.
 
-Each `event.value` has `stream`, `cursor`, `work`, `retain`, optional routing-ticket `context`, optional replacement
-navigation `state`, and `output`. Streams are ordered. Cursors are saved and returned unchanged, never compared
-numerically.
+Prompt-free configuration updates a RAM overlay without execution. Inquiry fields override it for one submission without
+consuming it. Reset discards overrides and navigation, not history or running work.
 
-Content updates contain:
+`app/open` and `app/observe` are owner-only. Observation without cursors starts live. Explicit cursors replay after
+those positions; missing streams start at the beginning and unknown cursors fail. Hosts do not numerically compare
+cursors.
+
+## Output
+
+Each `event.value` contains `stream`, `cursor`, `work`, `output`, optional routing-ticket `context`, and optional
+replacement navigation `state`. Streams are ordered. Content updates contain:
 
 ```text
 id: stable message ID within the stream
-revision: integer, starting at zero and increasing by one per update
+revision: consecutive integer starting at zero
 type: response | reasoning | tool-call | tool-result
 format: markdown | quote | code | json
-text: appended text, not a cumulative snapshot
-done: whether this presentation message is complete
-language: optional code language label
+text: appended text
+done: whether this message is complete
+language: optional code language
 reply: optional message ID in the same stream
 ```
 
-Metadata updates contain only `id`, `revision`, `type: metadata`, and `text`, an application-authored single-line footer
-of at most 1,000 characters. They replace the footer, not content. Metadata requires an open message and precedes its
-closing update. It is published once per application loop boundary or tool/effect-result boundary, never per token or
-transport split. Coincident boundaries may share one footer.
+Metadata contains only `id`, `revision`, `type: metadata`, and a single-line `text` footer of at most 1,000 characters.
+It replaces an open message's footer before closure, once per application loop/result boundary, not per token or split.
 
-A message's content type, format, language, reply, work, context, and retention cannot change. Closed messages cannot be
-updated. A nonstreaming message is one content update with `done: true`. Already-applied revisions are ignored on
-replay; revision gaps fail. Distinct messages may interleave. Applications publish only committed updates.
+Type, format, language, reply, work, and context cannot change. Closed messages cannot be updated. Ignore applied
+revisions on replay; reject gaps. Messages may interleave. Applications publish only committed updates. Presentation
+completion does not imply work completion.
 
-A host saves unfinished buffers, delivery parts, and their cursors in the same durable snapshot. Unsaved deltas replay
-from the previous saved cursor after restart. It sends only at explicit message completion, application loop termination
-(expressed by closing its messages), or destination-size splits. There are no timer or paragraph-triggered sends. Split
-at safe paragraph, line, or word boundaries; include all formatting and footer overhead. Unfinished syntax stays
-buffered. Indivisible oversized constructs become attachments, not broken markup. JSON is parsed only when complete.
-Message completion does not imply work completion.
+Hosts buffer until completion or destination-size splits, including formatting/footer overhead. Split at safe
+boundaries; attach indivisible oversized content. Parse JSON only when complete. Timers and paragraphs alone do not
+trigger sends.
 
-## Routing and delivery
+## Delivery
 
-Hosts issue opaque routing tickets and own their authenticated source, destination, profile, deployment, and expiry.
-Applications echo tickets; they do not authorize destinations. Child work may inherit a ticket. Output without one is
-observable but has no delivery destination. Only the exact admitted work may update selected navigation, not
-descendants.
+Hosts bind routing tickets to authenticated sources, destinations, profiles, deployments, and expiry. Applications echo
+tickets, not destinations. Children may inherit tickets; only exact admitted work may update selected navigation.
+Unknown tickets have no destination.
 
-Hosts own splitting, attachments, ordering, and delivery receipts. Attempts without receipts are uncertain and must not
-be automatically repeated. Applications own public content, language labels, and footer wording; hosts do not interpret
-internal execution references, loop labels, or status text. Ending observation does not cancel work.
+Routing, buffers, cursors, and delivery tracking are connection-local. Host restart promises no delivery recovery.
+Attempts without receipts are uncertain and must not be automatically repeated. Applications supply content and footer
+wording; hosts handle formatting and order. Ending observation does not cancel work.
