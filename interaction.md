@@ -45,29 +45,24 @@ cursors.
 ## Output
 
 Each `event.value` contains `stream`, `cursor`, `work`, `output`, optional routing-ticket `context`, and optional
-replacement navigation `state`. Streams are ordered. Content updates contain:
+replacement navigation `state`. Streams are ordered. Each output is one complete, immutable message:
 
 ```text
 id: stable message ID within the stream
-revision: consecutive integer starting at zero
 type: response | reasoning | tool-call | tool-result
 format: markdown | quote | code | json
-text: appended text
-done: whether this message is complete
+text: complete message text
 language: optional code language
 reply: optional message ID in the same stream
+footer: optional single-line text of at most 1,000 characters
 ```
 
-Metadata contains only `id`, `revision`, `type: metadata`, and a single-line `text` footer of at most 1,000 characters.
-It replaces an open message's footer before closure, once per application loop/result boundary, not per token or split.
+Applications publish only committed output. Provider deltas are internal and do not create output events. Ignore
+previously applied message IDs on replay. Message completion does not imply inquiry completion.
 
-Type, format, language, reply, work, and context cannot change. Closed messages cannot be updated. Ignore applied
-revisions on replay; reject gaps. Messages may interleave. Applications publish only committed updates. Presentation
-completion does not imply work completion.
-
-Hosts buffer until completion or destination-size splits, including formatting/footer overhead. Split at safe
-boundaries; attach indivisible oversized content. Parse JSON only when complete. Timers and paragraphs alone do not
-trigger sends.
+Applications supply a footer once per application loop/result boundary, on the corresponding completed message. Hosts
+split completed messages at safe destination-size boundaries, including formatting/footer overhead, and attach
+indivisible oversized content. Splitting does not create additional application events.
 
 ## Delivery
 
