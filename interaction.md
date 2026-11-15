@@ -1,75 +1,64 @@
 # Application interaction
 
-Optional payloads over PA. Applications own durable work, authorization, and public output. Hosts own connections,
-routing, and delivery. Codecs validate envelopes, not this contract.
+Optional application payloads over PA. Applications own work, authorization and history; hosts own connections and
+delivery. Work references, navigation state and cursors are opaque JSON values.
 
-## Discovery
+## Discovery and calls
 
-The owner calls `app/open` with `settings` and optional `initialize`. Settings contain opaque `config`, named
-`profiles`, and default `profile`. Call-level `imports` documents separately authorized bindings. Opening may recover
-work.
+The owner calls `app/open` with `settings` and optional `initialize`. Settings contain full named `profiles`, a default
+`profile`, and binding documentation under `imports[profile]`. Opening may recover work. The result maps profiles to
+`inputs` (`text`, `code`), a `history` batch limit, `parameters`, and `commands`.
 
-The result maps `profiles` to `inputs` (`text` and/or Janet `code`), `history` (maximum evidence batch), `parameters`,
-and `commands`. Commands declare `name`, `description`, and `parameters`. Parameters declare `name`, `description`,
-`type` (`string`, `integer`, `number`, `boolean`), and optional `default`, `minimum`, `maximum`, `choices`,
-`autocomplete`. Autocomplete names a command receiving `arguments.query`. Discovery grants no authority; applications
-revalidate input.
+Parameters declare `name`, `description`, `type` (`string`, `integer`, `number`, `boolean`), and optional `default`,
+`minimum`, `maximum`, `choices`, `autocomplete`. Commands declare a name, description and parameters. Autocomplete names
+a command receiving `arguments.query`. Documentation never grants authority.
 
-## Calls
-
-Calls carry `profile`. Work, navigation `state`, and cursors are opaque JSON values returned unchanged by hosts.
+Calls carry `profile`:
 
 - `app/submit`: `request`, `input`, optional `options`, `state`, `context`; returns `work` and optional replacement
   `state`.
-- `app/append`: `records`, `state`; adds evidence without execution and returns optional replacement `state`.
 - `app/read`: `work`, optional `wait`; returns a terminal result or null.
 - `app/cancel`: `work`; requests cancellation, never rollback.
+- `app/append`: `records`, `state`; adds evidence without executing it.
 - `app/command`: `command`, `arguments`, optional `state`, `options`; returns optional `value`, replacement `state`,
-  `format`, and `language`.
-- `app/observe`: optional `cursors` mapping streams to cursors; starts ordered replay followed by live output.
+  `format`, `language`, `footer`. Completion requests return `choices` of string name/value pairs.
+- `app/observe`: optional stream-to-cursor map `cursors`; starts replay followed by live observation. Without cursors it
+  starts live; missing streams start at the beginning and unknown positions fail. Hosts never compare application
+  cursors numerically.
 
-Input has exactly one of `text` or `code`, optional `at`, `records`, `images`, and application-defined selectors.
-Records contain `key`, `author`, `at`, `text`; images contain MIME `type` and base64 `data`. `request` persistently
-deduplicates work; reuse with different input fails. PA call IDs do not identify work.
+Input has exactly one of `text` or Janet `code`, optional `at`, `records`, `images`, and application selectors. Records
+contain `key`, `author`, `at`, `text`; images contain MIME `type` and base64 `data`. Request identities deduplicate
+work, not PA calls.
 
-Commands only read data or replace RAM navigation, never admit work or mutate durable state. `format` uses the content
-formats below; `language` labels code. With `completion: true`, return `choices` of string `name`/`value` pairs.
+Commands inspect data or replace RAM navigation; they never admit work. They may resolve approximate human references if
+they report the resolved reference. Execution selectors remain application-defined. Prompt-free settings update a RAM
+overlay; inquiry fields override it without consuming it. Reset clears navigation and overrides, not history or work.
 
-Prompt-free configuration updates a RAM overlay without execution. Inquiry fields override it for one submission without
-consuming it. Reset discards overrides and navigation, not history or running work.
+`app/open` and `app/observe` are owner-only. Invocation context is opaque: applications save and echo it on output and
+imported PA calls. Hosts authenticate its scope and recheck current grants; context is never a destination supplied by
+model code.
 
-`app/open` and `app/observe` are owner-only. Observation without cursors starts live. Explicit cursors replay after
-those positions; missing streams start at the beginning and unknown cursors fail. Hosts do not numerically compare
-cursors.
+## Notifications
 
-## Output
+Every `event.value` has `kind`, `stream`, `work`, and optional `context`:
 
-Each `event.value` contains `stream`, `cursor`, `work`, `output`, optional routing-ticket `context`, and optional
-replacement navigation `state`. Streams are ordered. Each output is one complete, immutable message:
+| Kind      | Additional fields                    | Meaning                                       |
+| --------- | ------------------------------------ | --------------------------------------------- |
+| `delta`   | `item`, `output`                     | Volatile text fragment; no historical cursor  |
+| `message` | `cursor`, `output`, optional `state` | One committed, immutable completed item       |
+| `busy`    | boolean `value`                      | Work activity, suitable for typing indicators |
 
-```text
-id: stable message ID within the stream
-type: response | reasoning | tool-call | tool-result
-format: markdown | quote | code | json
-text: complete message text
-language: optional code language
-reply: optional message ID in the same stream
-footer: optional single-line text of at most 1,000 characters
-```
+Output contains `type` (`response`, `reasoning`, `tool-call`, `tool-result`), `format` (`markdown`, `quote`, `code`,
+`json`), `text`, and optional `language`. Completed output also has a stable `id`, optional `reply`, and optional
+single-line `footer` of at most 1,000 characters. Delta `item` identifies that eventual completed output. A preview is
+not a committed answer.
 
-Applications publish only committed output. Provider deltas are internal and do not create output events. Ignore
-previously applied message IDs on replay. Message completion does not imply inquiry completion.
+Hosts send at item completion, inquiry termination, or safe destination-size overflow. There is no timer-based content
+flush. Formatting and footer overhead count toward limits; indivisible oversized content becomes an attachment. Footers
+appear once at application loop/result boundaries, on the final fragment. Splitting and deltas do not create historical
+events.
 
-Applications supply a footer once per application loop/result boundary, on the corresponding completed message. Hosts
-split completed messages at safe destination-size boundaries, including formatting/footer overhead, and attach
-indivisible oversized content. Splitting does not create additional application events.
-
-## Delivery
-
-Hosts bind routing tickets to authenticated sources, destinations, profiles, deployments, and expiry. Applications echo
-tickets, not destinations. Children may inherit tickets; only exact admitted work may update selected navigation.
-Unknown tickets have no destination.
-
-Routing, buffers, cursors, and delivery tracking are connection-local. Host restart promises no delivery recovery.
-Attempts without receipts are uncertain and must not be automatically repeated. Applications supply content and footer
-wording; hosts handle formatting and order. Ending observation does not cancel work.
+Deduplicate completed message IDs. Only exact admitted work may replace selected navigation; recursive work may inherit
+routing without taking over navigation. Ending observation does not cancel work. Buffers, overlays, cursors and delivery
+tracking are RAM-only; restart promises no delivery recovery. Attempts without receipts must not be automatically
+repeated.

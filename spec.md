@@ -14,17 +14,19 @@ EOF. Codecs validate frames and envelopes; applications authenticate and dispatc
 
 Only these fields are accepted, alongside `type`:
 
-| Type     | Fields                                                 |
-| -------- | ------------------------------------------------------ |
-| `ready`  | `handle`                                               |
-| `call`   | `id`, `caller`, `method`, `params`, optional `imports` |
-| `result` | `id`, `value`                                          |
-| `error`  | `id`, `error`                                          |
-| `event`  | `value`                                                |
+| Type     | Fields                                                            |
+| -------- | ----------------------------------------------------------------- |
+| `ready`  | `handle`                                                          |
+| `call`   | `id`, `caller`, `method`, `params`, optional `imports`, `context` |
+| `result` | `id`, `value`                                                     |
+| `error`  | `id`, `error`                                                     |
+| `event`  | `value`                                                           |
 
 Identities and methods are nonempty strings. `params` and `value` are JSON values. Errors contain string `code` and
 `message`, optional string `detail`, and optional object `context`. Imports map nonempty binding names to documentation
-strings; documentation grants no authority. `method` names the operation and `params` holds its argument directly.
+strings; documentation grants no authority. Optional call `context` is a nonempty UTF-8 string or null, opaque to PA.
+Hosts authenticate its invocation scope; possessing it does not change the asserted caller. `method` names the operation
+and `params` holds its argument directly.
 
 The process sends readiness once, before other messages. Its owner verifies the handle. Both sides then accept
 overlapping calls and choose distinct outstanding IDs independently. Each accepted call receives one matching result or

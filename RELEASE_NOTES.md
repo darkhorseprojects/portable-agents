@@ -1,5 +1,6 @@
 # Release notes
 
-The optional application contract uses RAM-only navigation and overrides. Commands cannot admit work; observation can
-attach live without replay. Command replies support content format and language. Retention flags and durable
-host-delivery requirements are removed. Wire envelopes and both codecs are unchanged.
+Calls may carry an opaque invocation `context`, validated by both codecs. The application contract separates volatile
+deltas and activity from committed completed-message notifications. Discovery uses full named settings and scoped import
+documents. Command replies can include a footer and report resolved inspection references. Hosts retain no durable
+operational ledger. No protocol or package version number changed.

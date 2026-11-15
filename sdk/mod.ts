@@ -6,6 +6,7 @@ export type Message =
     readonly method: string;
     readonly params: unknown;
     readonly imports?: Readonly<Record<string, string>>;
+    readonly context?: string | null;
   }
   | { readonly type: "ready"; readonly handle: string }
   | { readonly type: "event"; readonly value: unknown }
@@ -32,7 +33,7 @@ function message(value: unknown): Message {
     error: ["id", "error"],
   };
   const required = typeof raw.type === "string" && Object.hasOwn(fields, raw.type) && fields[raw.type];
-  const optional = raw.type === "call" ? ["imports"] : [];
+  const optional = raw.type === "call" ? ["imports", "context"] : [];
   if (
     !required || required.some((key) => !Object.hasOwn(raw, key)) ||
     Object.keys(raw).some((key) => !["type", ...required, ...optional].includes(key))
@@ -42,6 +43,9 @@ function message(value: unknown): Message {
     if (required.includes(key) && (typeof text !== "string" || !text || !text.isWellFormed())) {
       throw new Error(`Invalid ${key}`);
     }
+  }
+  if (raw.context != null && (typeof raw.context !== "string" || !raw.context || !raw.context.isWellFormed())) {
+    throw new Error("Invalid invocation context");
   }
   if (Object.hasOwn(raw, "imports")) {
     const imports = raw.imports;
