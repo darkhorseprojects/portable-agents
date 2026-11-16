@@ -16,5 +16,8 @@ Codecs validate envelopes, UTF-8 frames, and byte limits. Readers yield complete
 identity, dispatch, lifetime, and persistence. Handles identify authors; transport IDs only correlate calls. In Janet,
 use `:null` for required JSON null fields; nil-valued dictionary entries are absent.
 
-[spec.md](spec.md) defines the wire protocol; [interaction.md](interaction.md) defines optional application payloads.
-Run `deno task check` for formatting, lint, and type checks.
+Agents export `invoke(input, config, imports)`: bytes, opaque agent configuration, and ordinary Janet bindings. The
+agent owns its entry point and execution; PA supplies only transport utilities. Output can be a supplied function.
+
+[spec.md](spec.md) defines the wire protocol and calling convention. Run `deno task check` for formatting, lint, and
+type checks.

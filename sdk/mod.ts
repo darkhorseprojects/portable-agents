@@ -5,11 +5,8 @@ export type Message =
     readonly caller: string;
     readonly method: string;
     readonly params: unknown;
-    readonly imports?: Readonly<Record<string, string>>;
-    readonly context?: string | null;
   }
   | { readonly type: "ready"; readonly handle: string }
-  | { readonly type: "event"; readonly value: unknown }
   | { readonly type: "result"; readonly id: string; readonly value: unknown }
   | {
     readonly type: "error";
@@ -28,33 +25,19 @@ function message(value: unknown): Message {
   const fields: Record<string, readonly string[]> = {
     call: ["id", "caller", "method", "params"],
     ready: ["handle"],
-    event: ["value"],
     result: ["id", "value"],
     error: ["id", "error"],
   };
   const required = typeof raw.type === "string" && Object.hasOwn(fields, raw.type) && fields[raw.type];
-  const optional = raw.type === "call" ? ["imports", "context"] : [];
   if (
     !required || required.some((key) => !Object.hasOwn(raw, key)) ||
-    Object.keys(raw).some((key) => !["type", ...required, ...optional].includes(key))
+    Object.keys(raw).some((key) => !["type", ...required].includes(key))
   ) throw new Error("Invalid protocol envelope");
   for (const key of ["id", "caller", "method", "handle"]) {
     const text = raw[key];
     if (required.includes(key) && (typeof text !== "string" || !text || !text.isWellFormed())) {
       throw new Error(`Invalid ${key}`);
     }
-  }
-  if (raw.context != null && (typeof raw.context !== "string" || !raw.context || !raw.context.isWellFormed())) {
-    throw new Error("Invalid invocation context");
-  }
-  if (Object.hasOwn(raw, "imports")) {
-    const imports = raw.imports;
-    if (
-      !imports || typeof imports !== "object" || Array.isArray(imports) ||
-      Object.entries(imports).some(([name, documentation]) =>
-        !name || !name.isWellFormed() || typeof documentation !== "string" || !documentation.isWellFormed()
-      )
-    ) throw new Error("Invalid imports");
   }
   if (raw.type === "error") {
     const error = raw.error as Record<string, unknown> | null;

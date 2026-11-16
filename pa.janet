@@ -3,20 +3,12 @@
 
 (defn- envelope [value]
   (assert (dictionary? value) "invalid protocol message")
-  (def fields (get {"call" [:id :caller :method :params] "ready" [:handle] "event" [:value]
+  (def fields (get {"call" [:id :caller :method :params] "ready" [:handle]
                    "result" [:id :value] "error" [:id :error]} (value :type)))
-  (def optional (if (= "call" (value :type)) [:imports :context] []))
   (assert (and fields (every? (map |(has-key? value $) fields))
-    (every? (map |(index-of $ (array/concat @[:type] fields optional)) (keys value)))) "invalid protocol envelope")
+    (every? (map |(index-of $ (array/concat @[:type] fields)) (keys value)))) "invalid protocol envelope")
   (each key (filter |(index-of $ fields) [:id :caller :method :handle])
     (assert (and (string? (value key)) (> (length (value key)) 0) (utf8/is-valid? (value key))) "invalid protocol identity"))
-  (when (and (has-key? value :context) (not (index-of (value :context) [nil :null])))
-    (assert (and (string? (value :context)) (> (length (value :context)) 0) (utf8/is-valid? (value :context))) "invalid invocation context"))
-  (when (has-key? value :imports)
-    (assert (dictionary? (value :imports)) "invalid imports")
-    (each [name documentation] (pairs (value :imports))
-      (assert (and (or (string? name) (keyword? name)) (> (length (string name)) 0)
-        (utf8/is-valid? (string name)) (string? documentation) (utf8/is-valid? documentation)) "invalid imports")))
   (when (= "error" (value :type))
     (def diagnostic (value :error))
     (assert (and (dictionary? diagnostic) (string? (diagnostic :code)) (string? (diagnostic :message))

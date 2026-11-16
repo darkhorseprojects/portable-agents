@@ -1,6 +1,6 @@
 # Release notes
 
-Calls may carry an opaque invocation `context`, validated by both codecs. The application contract separates volatile
-deltas and activity from committed completed-message notifications. Discovery uses full named settings and scoped import
-documents. Command replies can include a footer and report resolved inspection references. Hosts retain no durable
-operational ledger. No protocol or package version number changed.
+PA retains only generic readiness, call, result and error envelopes. Routing context, import metadata and application
+notifications are no longer envelope fields. Agents export an ordinary `invoke(input, config, imports)` function; the
+agent's process entry point owns dispatch and imported bindings. The application interaction contract has been removed.
+No package or protocol version number changed.
