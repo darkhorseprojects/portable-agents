@@ -3,11 +3,11 @@
 Bounded JSON messages over a bidirectional process connection.
 
 ```sh
-jpm deps
 jpm install
 ```
 
-Install into the shared Janet module directory; set `JANET_PATH` if needed. Do not copy the module into agent checkouts.
+This installs declared dependencies too. Install into the shared Janet module directory; set `JANET_PATH` if needed. Do
+not copy the module into agent checkouts. Zinc installs PA as a dependency; no separate PA installation is required.
 
 - Janet: `pa/read(stream, pending, maximum-bytes)`, `pa/write(stream, message, maximum-bytes)`.
 - TypeScript: `Message`, `encode(message, maximumBytes)`, `decode(readable, maximumBytes)` from `sdk/mod.ts`.
