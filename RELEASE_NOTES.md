@@ -1,11 +1,9 @@
 # Release notes
 
-Handle provisioning and configuration formats belong to connection owners. The specification no longer prescribes UUID
-generation or ac.yaml storage. Envelopes and codecs are unchanged; no agent executable or profile field is required.
+Both libraries now own concurrent root/reverse-call correlation and connection failure. Root IDs scope reverse calls; no
+invocation context field, runner, application scheduler, or protocol version was added.
 
-PA uses fixed, unversioned envelopes in both directions. Readiness identifies the loaded author; calls carry the
-authenticated caller, binding name, argument value and optional flat binding documentation. Connection owners enforce
-readiness and directional correlation. Handles do not authenticate callers or preserve permissions.
-
-Both SDKs retain bounded UTF-8 framing and originating diagnostics. Applications own routes, grants, execution and
-persistence. Transport IDs confer neither work identity nor a safe-replay guarantee.
+PA retains only generic readiness, call, result and error envelopes. Routing context, import metadata and application
+notifications are no longer envelope fields. Agents export an ordinary `invoke(input, config, imports)` function; the
+agent's process entry point owns dispatch and imported bindings. The application interaction contract has been removed.
+No package or protocol version number changed.

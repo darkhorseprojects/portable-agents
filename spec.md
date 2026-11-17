@@ -1,61 +1,64 @@
-# Portable Agents protocol
+# Protocol
 
-## Boundary
+PA is a fixed, unversioned, bidirectional connection. Janet agents read stdin until EOF, write protocol frames to
+stdout, and diagnostics to stderr. PA supplies codecs and correlated connections, not an agent runner or application
+framework.
 
-PA is a fixed, unversioned, bidirectional connection. A process reads stdin until EOF and writes stdout. Diagnostics
-outside the protocol go to stderr. Calls may overlap in either direction.
+## Frames
 
-Each message is a UTF-8 JSON object terminated by one newline. The configured byte limit includes that newline. Invalid
-UTF-8, incomplete frames, unknown fields and oversized frames are errors. Complete frames are yielded immediately,
-without waiting for EOF. The SDK validates framing and envelopes; applications own authentication and dispatch.
+Each frame is one UTF-8 JSON object followed by a newline. The configured byte limit includes the newline. Invalid
+UTF-8, unknown fields, incomplete frames, and oversized frames fail. Readers yield complete frames without waiting for
+EOF. Codecs validate frames and envelopes; applications authenticate and dispatch calls.
 
-## Messages
+Only these fields are accepted, alongside `type`:
 
-Every message has a `type`. Only these fields are accepted:
+| Type     | Fields                             |
+| -------- | ---------------------------------- |
+| `ready`  | `handle`                           |
+| `call`   | `id`, `caller`, `method`, `params` |
+| `result` | `id`, `value`                      |
+| `error`  | `id`, `error`                      |
 
-- `ready`: `handle`, a nonempty author string identifying the loaded process.
-- `call`: nonempty strings `id`, `caller` and `method`, an argument value `params`, and optional `imports`.
-- `result`: the call's `id` and its `value`.
-- `error`: the call's `id` and an `error` object with string `code` and `message`, optional string `detail`, and
-  optional diagnostic object `context`.
-- `event`: an application-defined `value`.
+Identities and methods are nonempty strings. `params` and `value` are JSON values. Errors contain string `code` and
+`message`, optional string `detail`, and optional object `context`. Diagnostic context is not invocation authority.
 
-`imports` is a flat object mapping nonempty binding names to documentation strings. Only PA codecs validate its shape.
-Documentation neither grants authority nor supplies routing instructions. Applications register and authorize bindings
-separately. `method` names the binding and `params` is its argument value, not an invocation wrapper.
+The agent sends readiness once, before other messages. Its owner verifies the handle. Both sides choose distinct
+outstanding IDs independently. Each accepted call receives one matching result or error. Continue reading while calls
+execute; imported calls may overlap and responses may arrive out of order.
 
-The process sends readiness once before other messages. Its connection owner verifies the handle. Both sides may then
-send calls, events and responses. Each side chooses distinct outstanding call IDs; opposite directions have independent
-ID spaces. Each accepted call receives one result or error with the same ID. Responses may arrive in any order. Reading
-must continue while incoming calls execute. Events are publications, not partial terminal responses.
+## Agent entry point
 
-Forwarders preserve originating callers and diagnostics. Transport IDs correlate requests and responses only: they are
-not author identities, work identities, persistent deduplication keys or cancellation references.
+The agent exports an ordinary Janet function `invoke(input, config, imports)`: input is a byte string, config is an
+agent-owned JSON-compatible value, and imports is a Janet environment of callable bindings and their documentation. The
+agent returns a JSON-compatible value or raises an error. PA does not inspect configuration or implement invocation.
 
-## Authors and authority
+Over the process connection, the host calls method `invoke` with positional `params` containing base64 input, opaque
+config, and a map of imported binding names to documentation strings. The agent's process entry point decodes the input
+and constructs Janet bindings that make ordinary reverse calls. Documentation grants no authority. Output, if needed, is
+another supplied function, not a special protocol publication.
 
-`handle` and `caller` use the same nonempty string representation. No prefix is required. The connection owner supplies
-the agent's authoritative handle and verifies that readiness advertises it. Handles must remain stable when persisted
-authorship is retained. Importers must not replace a target's handle. Handle provisioning, persistence and configuration
-formats are outside this protocol. Users retain authenticated provider identities. Newly authored agent actions use the
-agent's handle; forwarding an existing call preserves its caller.
+Root IDs contain no slash. Reverse calls use that root followed by a slash and a connection-local sequence, for example
+`h17/1`. The host retains a handler for each outstanding root (`h17`, `h18`, ...), so invocations and imported calls can
+overlap without a global invocation lock. A root cannot complete with its own reverse calls outstanding. Once it ends,
+its imported functions are invalid. IDs select handlers, not grants: each retained handler still authorizes operations.
+PA requires no policy name, authority token, application catalogue, or discovery handshake. Agents may expose ordinary
+source-owned discovery methods; PA does not interpret their results.
 
-A handle identifies an author; possession of its text does not authenticate anyone. Connection owners authenticate the
-source and decide which callers it may assert. Renames, moves and credential changes do not change authorship or
-ownership, but do not preserve permissions automatically. Credentials, locations, revisions and work references remain
-separate. PA supplies no identity registry or authorization mechanism.
+## Identity and lifetime
 
-## Lifetime and ownership
+The owner provisions the authoritative agent handle and authenticates which callers each source may assert. Handles
+identify principals, not policies, paths, credentials, or processes. They remain stable across renames, moves, and
+credential rotation; permissions are independently authorized. Newly authored agent actions use the agent's handle.
+Possessing a handle does not authenticate its bearer.
 
-EOF ends the connection. A partial frame is invalid. The connection owner fails unresolved calls on disconnect. Ending
-an observation does not cancel work; applications define explicit cancellation and work references separately.
+Call IDs correlate transport responses only. They are not durable work references, cancellation references, credentials,
+or permission to retry effects. Applications own work, persistence, and recovery. Retained work does not retain host
+imports or delivery authority after disconnect.
 
-Admission does not imply completion. Root outcomes, descendant execution, settlement, delivery and world publication may
-have different boundaries. Applications own their ordering, execution and persistence.
+EOF ends the connection; a partial frame fails. The owner stops its process and fails unresolved calls on disconnect. A
+failed call does not prove an external action failed. PA promises neither detached execution nor durable delivery.
 
-The host owns and stops its process. PA promises neither detached execution nor cross-process durability. Explicitly
-persistent work may survive according to the application; temporary sessions disappear with their host. A failed call or
-disconnected process does not prove that external effects did not occur. Never infer safe replay from transport IDs.
-
-Use Janet `pa/read` and `pa/write`, or TypeScript `Message`, `encode` and `decode`. PA owns no scheduler, database,
-installer, invocation helper or capability transport.
+Janet exposes framing, `diagnostic`, and `serve(handle, maximum, handler)`. The handler receives the call and an
+ordinary `reverse(method, params)` function. TypeScript exposes framing, diagnostics, and `Connection` over supplied
+streams. Connection failure rejects unresolved calls; cancellation invalidates that invocation's reverse actions without
+terminating unrelated roots. No connection identity is a durable execution reference.
