@@ -75,13 +75,14 @@
         (assert (and (not (active (message :id))) (not (string/find "/" (message :id)))) "invalid root call identity")
         (put active (message :id) true)
         (ev/go (fn []
-          (var sequence 0) (var opened true)
+          (var sequence 0) (var opened true) (var outstanding 0) (def drained (ev/chan 1))
           (def reverse (fn [method params]
             (assert opened "invocation has ended")
             (def id (string (message :id) "/" (++ sequence))) (def reply (ev/chan 1))
-            (put pending id reply)
-            (ev/give outgoing {:type "call" :id id :caller handle :method method :params (if (nil? params) :null params)})
-            (defer (ev/chan-close reply)
+            (put pending id reply) (++ outstanding)
+            (defer (do (ev/chan-close reply) (-- outstanding)
+                (when (and (not opened) (= 0 outstanding)) (ev/give drained true)))
+              (ev/give outgoing {:type "call" :id id :caller handle :method method :params (if (nil? params) :null params)})
               (def result (ev/take reply))
               (when (result :error) (error (result :error)))
               (postwalk |(if (= $ :null) nil $) (result :value)))))
@@ -89,8 +90,9 @@
             (let [value (handler message reverse)]
               {:type "result" :id (message :id) :value (if (nil? value) :null value)})
             ([err fiber] {:type "error" :id (message :id) :error (diagnostic err fiber)})))
-          (set opened false) (put active (message :id) nil)
-          (ev/give outgoing response))))
+          (set opened false)
+          (while (> outstanding 0) (ev/take drained)) (ev/chan-close drained)
+          (put active (message :id) nil) (ev/give outgoing response))))
       (do
         (assert (index-of (message :type) ["result" "error"]) "unexpected envelope")
         (def reply (pending (message :id))) (assert reply "unexpected response")

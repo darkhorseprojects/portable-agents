@@ -116,9 +116,8 @@ export class Connection {
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>;
   readonly #pending = new Map<
     string,
-    { response: PromiseWithResolvers<unknown>; dispatch: Dispatch; signal: AbortSignal }
+    { response: PromiseWithResolvers<unknown>; dispatch: Dispatch; signal: AbortSignal; incoming: Set<string> }
   >();
-  readonly #incoming = new Set<string>();
   readonly #stop = new AbortController();
   readonly #ready = Promise.withResolvers<void>();
   readonly closed: Promise<void>;
@@ -150,10 +149,11 @@ export class Connection {
           } else {
             if (!loaded) throw new Error("Missing peer readiness");
             if (message.type === "call") {
-              if (message.caller !== peer || this.#incoming.has(message.id)) throw new Error("Invalid incoming call");
+              if (message.caller !== peer) throw new Error("Invalid incoming call");
               const invocation = this.#pending.get(message.id.split("/", 1)[0]);
               if (!invocation) throw new Error("Unknown invocation");
-              this.#incoming.add(message.id);
+              if (invocation.incoming.has(message.id)) throw new Error("Duplicate incoming call");
+              invocation.incoming.add(message.id);
               void (async () => {
                 let response: Message;
                 try {
@@ -167,12 +167,12 @@ export class Connection {
                   response = { type: "error", id: message.id, error: diagnostic(error) };
                 }
                 const bytes = encode(response, maximumBytes);
-                this.#incoming.delete(message.id);
+                invocation.incoming.delete(message.id);
                 await writer.write(bytes);
               })().catch((error) => this.#stop.abort(error));
             } else {
               const invocation = this.#pending.get(message.id);
-              if (!invocation || [...this.#incoming].some((id) => id.startsWith(message.id + "/"))) {
+              if (!invocation || invocation.incoming.size) {
                 throw new Error("Unexpected response or outstanding imported call");
               }
               this.#pending.delete(message.id);
@@ -204,7 +204,7 @@ export class Connection {
     this.#stop.signal.throwIfAborted();
     const id = "h" + ++this.#sequence;
     const response = Promise.withResolvers<unknown>();
-    this.#pending.set(id, { response, dispatch, signal });
+    this.#pending.set(id, { response, dispatch, signal, incoming: new Set() });
     const abort = () => response.reject(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     try {
