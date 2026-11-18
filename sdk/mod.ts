@@ -74,6 +74,8 @@ function message(value: unknown): Message {
   return value as Message;
 }
 
+class FrameTooLarge extends Error {}
+
 export function encode(value: Message, maximumBytes: number): Uint8Array {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 0x7fffffff) {
     throw new Error("Invalid frame limit");
@@ -81,7 +83,7 @@ export function encode(value: Message, maximumBytes: number): Uint8Array {
   const json = JSON.stringify(value);
   message(JSON.parse(json));
   const bytes = new TextEncoder().encode(json + "\n");
-  if (bytes.length > maximumBytes) throw new Error("Frame exceeds byte limit");
+  if (bytes.length > maximumBytes) throw new FrameTooLarge("Frame exceeds byte limit");
   return bytes;
 }
 
@@ -166,7 +168,20 @@ export class Connection {
                 } catch (error) {
                   response = { type: "error", id: message.id, error: diagnostic(error) };
                 }
-                const bytes = encode(response, maximumBytes);
+                let bytes: Uint8Array;
+                try {
+                  bytes = encode(response, maximumBytes);
+                } catch (error) {
+                  if (!(error instanceof FrameTooLarge)) throw error;
+                  bytes = encode({
+                    type: "error",
+                    id: message.id,
+                    error: {
+                      code: "TransportLimit",
+                      message: "Import response exceeds the frame limit; effects may have happened",
+                    },
+                  }, maximumBytes);
+                }
                 invocation.incoming.delete(message.id);
                 await writer.write(bytes);
               })().catch((error) => this.#stop.abort(error));
