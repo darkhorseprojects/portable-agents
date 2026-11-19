@@ -1,3 +1,63 @@
+import { z } from "zod";
+
+type Setting = { type: "string" | "integer" | "boolean"; description: string; minimum?: number; maximum?: number };
+export type Discovery = {
+  methods: string[];
+  schema: Record<string, Setting>;
+  commands: { name: string; description: string; options?: (Setting & { name: string })[] }[];
+  intake?: { max_records: number; image_bytes: number };
+};
+export type Output = {
+  type: "reasoning" | "response" | "tool-call" | "tool-result" | "diagnostic" | "metadata" | "activity";
+  text: string;
+  id?: string;
+  reply?: string | null;
+  language?: string;
+  footer?: string;
+  active?: boolean;
+};
+
+const Field = z.strictObject({
+  type: z.enum(["string", "integer", "boolean"]),
+  description: z.string().min(1),
+  minimum: z.number().optional(),
+  maximum: z.number().optional(),
+});
+export const Discovery: z.ZodType<Discovery> = z.strictObject({
+  methods: z.array(z.string()),
+  schema: z.record(z.string(), Field),
+  commands: z.array(
+    z.strictObject({
+      name: z.string(),
+      description: z.string(),
+      options: z.array(Field.extend({ name: z.string() })).optional(),
+    }),
+  ),
+  intake: z.strictObject({ max_records: z.number().int().positive(), image_bytes: z.number().int().nonnegative() })
+    .optional(),
+});
+export const Prepared: z.ZodType<
+  { config: unknown; input: unknown; options: Record<string, unknown>; history: boolean }
+> = z.strictObject({
+  config: z.json(),
+  input: z.json(),
+  options: z.record(z.string(), z.json()),
+  history: z.boolean(),
+});
+export const Position: z.ZodType<{ config: unknown; through: string | null }> = z.strictObject({
+  config: z.json(),
+  through: z.string().nullable(),
+});
+export const Output: z.ZodType<Output> = z.object({
+  type: z.enum(["reasoning", "response", "tool-call", "tool-result", "diagnostic", "metadata", "activity"]),
+  text: z.string().refine((text) => text.isWellFormed()).default(""),
+  id: z.string().optional(),
+  reply: z.string().nullable().optional(),
+  language: z.string().regex(/^[a-z0-9_+-]*$/i).optional(),
+  footer: z.string().optional(),
+  active: z.boolean().optional(),
+});
+
 export type Message =
   | {
     readonly type: "call";
@@ -233,6 +293,17 @@ export class Connection {
     } finally {
       signal.removeEventListener("abort", abort);
     }
+  }
+
+  invoke(
+    caller: string,
+    input: Uint8Array,
+    config: unknown,
+    imports: Record<string, string>,
+    dispatch: Dispatch,
+    signal: AbortSignal,
+  ): Promise<unknown> {
+    return this.call(caller, "invoke", [input.toBase64(), config, imports], dispatch, signal);
   }
 
   async close() {

@@ -1,4 +1,5 @@
 (import spork/json :as json)
+(import spork/base64 :as base64)
 (import spork/utf8 :as utf8)
 
 (defn- envelope [value]
@@ -57,19 +58,28 @@
   (when (and fiber (not (d :detail)))
     (def trace @"") (with-dyns [:err trace] (debug/stacktrace fiber)) (put d :detail (string trace))) d)
 
-(defn serve [handle maximum handler]
+(defn serve [methods]
+  (unless (index-of (os/which) [:windows :mingw]) (os/umask 8r077) (os/sigaction :pipe (fn [])))
+  (def handle (os/getenv "PA_HANDLE"))
+  (def maximum (scan-number (os/getenv "PA_FRAME_BYTES")))
+  (assert (and (string? handle) (not (empty? handle)) (int? maximum) (<= 1 maximum 0x7fffffff)) "invalid PA process settings")
+  (assert (function? (methods :invoke)) "agent must export invoke")
   (def incoming (ev/thread-chan 256)) (def outgoing (ev/thread-chan 256))
   (def pending @{}) (def active @{})
   (ev/thread (fn [[incoming maximum]]
     (try (do (def bytes @"") (var message nil)
-      (while (set message (read stdin bytes maximum)) (ev/give incoming message)) (os/exit 0 true))
+      (while (set message (read stdin bytes maximum)) (ev/give incoming message)) (ev/give incoming :eof))
       ([err fiber] (eprint (json/encode (diagnostic err fiber))) (os/exit 1 true)))) [incoming maximum] :n)
   (ev/thread (fn [[outgoing maximum]]
-    (try (while true (write stdout (ev/take outgoing) maximum))
+    (try (while true (def frame (ev/take outgoing))
+      (when (= frame :eof) (os/exit 0 true)) (write stdout frame maximum))
       ([err fiber] (eprint (json/encode (diagnostic err fiber))) (os/exit 1 true)))) [outgoing maximum] :n)
   (ev/give outgoing {:type "ready" :handle handle})
   (while true
     (def message (ev/take incoming))
+    (when (= message :eof)
+      (each reply (values pending) (ev/give reply {:error {:code "Disconnected" :message "Connection ended."}}))
+      (ev/give outgoing :eof) (break))
     (if (= "call" (message :type))
       (do
         (assert (and (not (active (message :id))) (not (string/find "/" (message :id)))) "invalid root call identity")
@@ -86,11 +96,24 @@
               (def result (ev/take reply))
               (when (result :error) (error (result :error)))
               (postwalk |(if (= $ :null) nil $) (result :value)))))
+          (def root @{:id (message :id) :caller (message :caller) :open true})
           (def response (try
-            (let [value (handler message reverse)]
+            (let [method (keyword (message :method)) params (postwalk |(if (= $ :null) nil $) (message :params))
+                  value (with-dyns [:pa/root root :pa/handle handle]
+                    (case method
+                      :describe (merge {:schema {} :commands []}
+                        (if-let [describe (methods :describe)] (describe params) {})
+                        {:methods (map string (keys methods))})
+                      :invoke (do
+                        (assert (and (indexed? params) (= 3 (length params)) (string? (params 0)) (dictionary? (params 2))) "expected invoke(input, config, imports)")
+                        (def imports (tabseq [[name documentation] :pairs (params 2)] (symbol name)
+                          (do (assert (string? documentation) "invalid import documentation")
+                            @{:doc documentation :value (fn [arg] (reverse (string name) arg))})))
+                        ((methods :invoke) (base64/decode (params 0)) (params 1) imports))
+                      (apply (assert (methods method) "unknown agent method") params)))]
               {:type "result" :id (message :id) :value (if (nil? value) :null value)})
             ([err fiber] {:type "error" :id (message :id) :error (diagnostic err fiber)})))
-          (set opened false)
+          (put root :open false) (set opened false)
           (while (> outstanding 0) (ev/take drained)) (ev/chan-close drained)
           (put active (message :id) nil) (ev/give outgoing response))))
       (do

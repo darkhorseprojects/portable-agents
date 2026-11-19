@@ -58,7 +58,19 @@ imports or delivery authority after disconnect.
 EOF ends the connection; a partial frame fails. The owner stops its process and fails unresolved calls on disconnect. A
 failed call does not prove an external action failed. PA promises neither detached execution nor durable delivery.
 
-Janet exposes framing, `diagnostic`, and `serve(handle, maximum, handler)`. The handler receives the call and an
-ordinary `reverse(method, params)` function. TypeScript exposes framing, diagnostics, and `Connection` over supplied
-streams. Connection failure rejects unresolved calls; cancellation invalidates that invocation's reverse actions without
-terminating unrelated roots. No connection identity is a durable execution reference.
+## Optional interaction methods
+
+`describe(config)` returns `methods`, `schema` (writable setting IDs and field descriptions), `commands` (names,
+descriptions, optional typed arguments), and optionally `intake` limits. An invoke-only Janet agent gets an empty
+description automatically. Discovery does not grant authority. Connector-specific control commands are not agent
+methods.
+
+`prepare(config, context, personal, once, input)` validates a proposed invocation or settings change. Context contains
+conversation, request, opaque scope and optional command. The result contains opaque config, input, effective personal
+options and a history flag. Optional `position(config)` and `append(config,batch)` implement history intake; cursor
+strings are opaque to PA. `activate(config, authority)` supplies local recovery policy without granting delivery
+authority. All methods except describe take positional params arrays; invoke retains its original wire format.
+
+An optional `output` import accepts typed text, language, opaque correlation IDs and display-ready footer text; activity
+uses `active`. Publication finishes when the caller acknowledges the reverse call. A failed or disconnected sink is not
+evidence the underlying work failed.
