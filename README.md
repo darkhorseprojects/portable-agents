@@ -3,11 +3,12 @@
 Bounded JSON messages over a bidirectional process connection.
 
 ```sh
+jpm deps
 jpm install
 ```
 
-This installs declared dependencies too. Install into the shared Janet module directory; set `JANET_PATH` if needed. Do
-not copy the module into agent checkouts. Zinc installs PA as a dependency; no separate PA installation is required.
+Install into the shared Janet module directory; set `JANET_PATH` if needed. Do not copy the module into agent checkouts.
+Zinc installs PA as a dependency; no separate PA installation is required.
 
 Serve an agent with `(pa/serve {:invoke invoke})`. The SDK reads `PA_HANDLE` and `PA_FRAME_BYTES`, decodes byte input,
 and constructs callable imports. Inside a call `(dyn :pa/root)` identifies the live caller; never persist this object.
