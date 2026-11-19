@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import { z } from "zod";
 
 type Setting = { type: "string" | "integer" | "boolean"; description: string; minimum?: number; maximum?: number };
@@ -309,4 +310,67 @@ export class Connection {
   async close() {
     if (!this.#stop.signal.aborted) await this.#writer.close();
   }
+}
+
+export type LiveAgent = Pick<Connection, "ready" | "call" | "invoke" | "closed"> & {
+  close(milliseconds: number): Promise<void>;
+};
+
+export function openAgent(
+  handle: string,
+  runtime: {
+    module: string;
+    directory: string;
+    environment?: Record<string, string>;
+    transport: { "frame-bytes": number; "admission-seconds": number };
+  },
+): LiveAgent {
+  const child = new Deno.Command("janet", {
+    args: ["-t", runtime.module],
+    cwd: runtime.directory,
+    env: {
+      ...runtime.environment,
+      PA_FRAME_BYTES: String(runtime.transport["frame-bytes"]),
+      PA_HANDLE: handle,
+    },
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  const connection = new Connection(child.stdout, child.stdin, handle, runtime.transport["frame-bytes"]);
+  const kill = () => {
+    try {
+      child.kill("SIGKILL");
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) console.error(error);
+    }
+  };
+  const timeout = setTimeout(kill, runtime.transport["admission-seconds"] * 1000);
+  void connection.ready.finally(() => clearTimeout(timeout)).catch(() => {});
+  const logs = (async () => {
+    for await (const text of child.stderr.pipeThrough(new TextDecoderStream())) {
+      Deno.stderr.writeSync(new TextEncoder().encode(stripVTControlCharacters(text)));
+    }
+  })();
+  const closed = (async () => {
+    await connection.closed;
+    kill();
+    await child.status;
+    await logs;
+  })();
+  return {
+    ready: connection.ready,
+    closed,
+    call: connection.call.bind(connection),
+    invoke: connection.invoke.bind(connection),
+    async close(milliseconds: number) {
+      const timer = setTimeout(kill, milliseconds);
+      try {
+        await connection.close();
+        await closed;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
 }
