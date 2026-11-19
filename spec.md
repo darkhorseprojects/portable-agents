@@ -30,7 +30,8 @@ execute; imported calls may overlap and responses may arrive out of order.
 
 The agent exports an ordinary Janet function `invoke(input, config, imports)`: input is a byte string, config is an
 agent-owned JSON-compatible value, and imports is a Janet environment of callable bindings and their documentation. The
-agent returns a JSON-compatible value or raises an error. PA does not inspect configuration or implement invocation.
+agent returns a JSON-compatible value or raises an error. PA does not inspect configuration or schedule application
+work.
 
 Over the process connection, the host calls method `invoke` with positional `params` containing base64 input, opaque
 config, and a map of imported binding names to documentation strings. The agent's process entry point decodes the input
@@ -66,11 +67,14 @@ description automatically. Discovery does not grant authority. Connector-specifi
 methods.
 
 `prepare(config, context, personal, once, input)` validates a proposed invocation or settings change. Context contains
-conversation, request, opaque scope and optional command. The result contains opaque config, input, effective personal
-options and a history flag. Optional `position(config)` and `append(config,batch)` implement history intake; cursor
-strings are opaque to PA. `activate(config, authority)` supplies local recovery policy without granting delivery
-authority. All methods except describe take positional params arrays; invoke retains its original wire format.
+conversation, request, scope and optional command. The result contains opaque config, input, effective personal options
+and a history flag. Optional `position(config)` and `append(config,batch)` implement history intake; cursor strings are
+opaque to PA. `activate(config, authority)` supplies local recovery policy without granting delivery authority. All
+methods except describe take positional params arrays; invoke retains its original wire format.
 
 An optional `output` import accepts typed text, language, opaque correlation IDs and display-ready footer text; activity
 uses `active`. Publication finishes when the caller acknowledges the reverse call. A failed or disconnected sink is not
 evidence the underlying work failed.
+
+For local recovery, `context.scope.authority` names the grant supplied to `activate`. Other scope fields identify the
+delivery context and are opaque to the agent. Neither a scope nor a saved work reference authenticates its holder.

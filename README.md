@@ -14,7 +14,7 @@ and constructs callable imports. Inside a call `(dyn :pa/root)` identifies the l
 Optional application methods are registered in the same table. The built-in `describe` method lists supported methods
 even for invoke-only agents.
 
-`Connection.invoke` is the matching TypeScript interface. The caller authorizes imports; agents own their configuration,
-persistence, and execution policy.
+`Connection.invoke` is the matching TypeScript interface. `openAgent` starts the configured Janet process and bounds
+startup and shutdown. The caller authorizes imports; agents own their configuration, persistence, and execution policy.
 
 [spec.md](spec.md) defines the wire protocol and calling convention.
