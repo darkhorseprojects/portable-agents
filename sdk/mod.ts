@@ -2,20 +2,19 @@ import { stripVTControlCharacters } from "node:util";
 import { z } from "zod";
 
 type Setting = { type: "string" | "integer" | "boolean"; description: string; minimum?: number; maximum?: number };
-export type Discovery = {
+export type Schema = z.core.JSONSchema.JSONSchema;
+export type AgentDescription = {
   methods: string[];
-  schema: Record<string, Setting>;
+  configSchema?: Schema;
   commands: { name: string; description: string; options?: (Setting & { name: string })[] }[];
   intake?: { max_records: number; image_bytes: number };
 };
 export type Output = {
-  type: "reasoning" | "response" | "tool-call" | "tool-result" | "diagnostic" | "metadata" | "activity";
-  text: string;
+  type: string;
+  data: Uint8Array;
+  final: boolean;
   id?: string;
-  reply?: string | null;
-  language?: string;
-  footer?: string;
-  active?: boolean;
+  reply?: string;
 };
 
 const Field = z.strictObject({
@@ -24,9 +23,9 @@ const Field = z.strictObject({
   minimum: z.number().optional(),
   maximum: z.number().optional(),
 });
-export const Discovery: z.ZodType<Discovery> = z.strictObject({
+export const AgentDescription: z.ZodType<AgentDescription> = z.strictObject({
   methods: z.array(z.string()),
-  schema: z.record(z.string(), Field),
+  configSchema: z.record(z.string(), z.json()).optional(),
   commands: z.array(
     z.strictObject({
       name: z.string(),
@@ -38,28 +37,25 @@ export const Discovery: z.ZodType<Discovery> = z.strictObject({
     .optional(),
 });
 export const Prepared: z.ZodType<
-  { config: unknown; input: unknown; options: Record<string, unknown>; history: boolean }
+  { config: unknown; input: unknown; history: boolean }
 > = z.strictObject({
   config: z.json(),
   input: z.json(),
-  options: z.record(z.string(), z.json()),
   history: z.boolean(),
 });
 export const Position: z.ZodType<{ config: unknown; through: string | null }> = z.strictObject({
   config: z.json(),
   through: z.string().nullable(),
 });
-export const Output: z.ZodType<Output> = z.object({
-  type: z.enum(["reasoning", "response", "tool-call", "tool-result", "diagnostic", "metadata", "activity"]),
-  text: z.string().refine((text) => text.isWellFormed()).default(""),
+const chunk = z.strictObject({
+  type: z.string().regex(/^[\w!#$%&'*+.^`|~-]+\/[\w!#$%&'*+.^`|~-]+(?:\s*;[^\r\n]+)?$/),
+  data: z.base64().transform((s) => Uint8Array.fromBase64(s)),
+  final: z.boolean(),
   id: z.string().optional(),
-  reply: z.string().nullable().optional(),
-  language: z.string().regex(/^[a-z0-9_+-]*$/i).optional(),
-  footer: z.string().optional(),
-  active: z.boolean().optional(),
+  reply: z.string().optional(),
 });
 
-export type Message =
+export type Frame =
   | {
     readonly type: "call";
     readonly id: string;
@@ -80,8 +76,8 @@ export type Message =
     };
   };
 
-export type Call = Extract<Message, { type: "call" }>;
-export type Diagnostic = Extract<Message, { type: "error" }>["error"];
+export type Call = Extract<Frame, { type: "call" }>;
+export type Diagnostic = Extract<Frame, { type: "error" }>["error"];
 export type Dispatch = (call: Call, signal: AbortSignal) => Promise<unknown>;
 
 export class RemoteError extends Error {
@@ -95,12 +91,12 @@ export function diagnostic(error: unknown): Diagnostic {
   if (error instanceof RemoteError) return error.diagnostic;
   return {
     code: error instanceof Error ? error.name : "ExecutionFailed",
-    message: String(error),
+    message: error instanceof Error ? error.message : String(error),
     ...(error instanceof Error && error.stack ? { detail: error.stack } : {}),
   };
 }
 
-function message(value: unknown): Message {
+function message(value: unknown): Frame {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid protocol message");
   const raw = value as Record<string, unknown>;
   const fields: Record<string, readonly string[]> = {
@@ -132,12 +128,12 @@ function message(value: unknown): Message {
       Object.keys(error).some((key) => !["code", "message", "detail", "context"].includes(key))
     ) throw new Error("Invalid diagnostic");
   }
-  return value as Message;
+  return value as Frame;
 }
 
 class FrameTooLarge extends Error {}
 
-export function encode(value: Message, maximumBytes: number): Uint8Array {
+export function encode(value: Frame, maximumBytes: number): Uint8Array {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 0x7fffffff) {
     throw new Error("Invalid frame limit");
   }
@@ -151,7 +147,7 @@ export function encode(value: Message, maximumBytes: number): Uint8Array {
 export async function* decode(
   readable: ReadableStream<Uint8Array>,
   maximumBytes: number,
-): AsyncGenerator<Message> {
+): AsyncGenerator<Frame> {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 0x7fffffff) {
     throw new Error("Invalid frame limit");
   }
@@ -218,7 +214,7 @@ export class Connection {
               if (invocation.incoming.has(message.id)) throw new Error("Duplicate incoming call");
               invocation.incoming.add(message.id);
               void (async () => {
-                let response: Message;
+                let response: Frame;
                 try {
                   invocation.signal.throwIfAborted();
                   response = {
@@ -304,7 +300,27 @@ export class Connection {
     dispatch: Dispatch,
     signal: AbortSignal,
   ): Promise<unknown> {
-    return this.call(caller, "invoke", [input.toBase64(), config, imports], dispatch, signal);
+    let item: Pick<Output, "type" | "id" | "reply"> | undefined;
+    let writing = false;
+    return this.call(caller, "invoke", [input.toBase64(), config, imports], async (call, active) => {
+      if (call.method !== "output") return await dispatch(call, active);
+      const output = chunk.parse(call.params);
+      if (writing || item && (item.type !== output.type || item.id !== output.id || item.reply !== output.reply)) {
+        throw new Error("Overlapping output items");
+      }
+      item = { type: output.type, id: output.id, reply: output.reply };
+      writing = true;
+      try {
+        const ack = await dispatch({ ...call, params: output }, active);
+        if (output.final) item = undefined;
+        return ack;
+      } finally {
+        writing = false;
+      }
+    }, signal).then((value) => {
+      if (item) throw new Error("Partial output item");
+      return value;
+    });
   }
 
   async close() {

@@ -52,10 +52,10 @@
   (when (get stream :flush) (:flush stream)))
 
 (defn diagnostic [err &opt fiber]
-  (def d (if (and (dictionary? err) (string? (err :code)) (string? (err :message)))
-    (tabseq [key :in [:code :message :detail :context] :when (has-key? err key)] key (err key))
-    @{:code "ExecutionFailed" :message (string err)}))
-  (when (and fiber (not (d :detail)))
+  (when (and (dictionary? err) (string? (err :code)) (string? (err :message)))
+    (break (tabseq [key :in [:code :message :detail :context] :when (has-key? err key)] key (err key))))
+  (def d @{:code "ExecutionFailed" :message (string err)})
+  (when fiber
     (def trace @"") (with-dyns [:err trace] (debug/stacktrace fiber)) (put d :detail (string trace))) d)
 
 (defn serve [methods]
@@ -101,14 +101,15 @@
             (let [method (keyword (message :method)) params (postwalk |(if (= $ :null) nil $) (message :params))
                   value (with-dyns [:pa/root root :pa/handle handle]
                     (case method
-                      :describe (merge {:schema {} :commands []}
+                      :describe (merge {:commands []}
                         (if-let [describe (methods :describe)] (describe params) {})
                         {:methods (map string (keys methods))})
                       :invoke (do
                         (assert (and (indexed? params) (= 3 (length params)) (string? (params 0)) (dictionary? (params 2))) "expected invoke(input, config, imports)")
                         (def imports (tabseq [[name documentation] :pairs (params 2)] (symbol name)
                           (do (assert (string? documentation) "invalid import documentation")
-                            @{:doc documentation :value (fn [arg] (reverse (string name) arg))})))
+                            @{:doc documentation :value (fn [arg] (reverse (string name)
+                              (if (= name :output) (merge arg {:data (base64/encode (arg :data))}) arg)))})))
                         ((methods :invoke) (base64/decode (params 0)) (params 1) imports))
                       (apply (assert (methods method) "unknown agent method") params)))]
               {:type "result" :id (message :id) :value (if (nil? value) :null value)})

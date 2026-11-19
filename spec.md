@@ -20,7 +20,8 @@ Only these fields are accepted, alongside `type`:
 | `error`  | `id`, `error`                      |
 
 Identities and methods are nonempty strings. `params` and `value` are JSON values. Errors contain string `code` and
-`message`, optional string `detail`, and optional object `context`. Diagnostic context is not invocation authority.
+`message`, optional string `detail`, and optional object `context`. A received `Diagnostic` keeps these fields when it
+crosses another call boundary. It doesn't need an `output` import. Diagnostic context is not invocation authority.
 
 The agent sends readiness once, before other messages. Its owner verifies the handle. Both sides choose distinct
 outstanding IDs independently. Each accepted call receives one matching result or error. Continue reading while calls
@@ -61,20 +62,26 @@ failed call does not prove an external action failed. PA promises neither detach
 
 ## Optional interaction methods
 
-`describe(config)` returns `methods`, `schema` (writable setting IDs and field descriptions), `commands` (names,
-descriptions, optional typed arguments), and optionally `intake` limits. An invoke-only Janet agent gets an empty
+`describe(config)` returns an `AgentDescription` with `methods`, `commands` (names, descriptions, optional typed
+arguments), and optionally `configSchema` (JSON Schema) and `intake` limits. An invoke-only Janet agent gets an empty
 description automatically. Discovery does not grant authority. Connector-specific control commands are not agent
 methods.
 
-`prepare(config, context, personal, once, input)` validates a proposed invocation or settings change. Context contains
-conversation, request, scope and optional command. The result contains opaque config, input, effective personal options
-and a history flag. Optional `position(config)` and `append(config,batch)` implement history intake; cursor strings are
-opaque to PA. `activate(config, authority)` supplies local recovery policy without granting delivery authority. All
-methods except describe take positional params arrays; invoke retains its original wire format.
+`prepare(config, context, input)` validates the effective config and request. Context contains conversation, request,
+scope and optional command. The result contains opaque config, input and a history flag. Optional `position(config)` and
+`append(config,batch)` implement history intake; cursor strings are opaque to PA. `activate(config, authority)` supplies
+local recovery policy without granting delivery authority. All methods except describe take positional params arrays;
+invoke retains its original wire format.
 
-An optional `output` import accepts typed text, language, opaque correlation IDs and display-ready footer text; activity
-uses `active`. Publication finishes when the caller acknowledges the reverse call. A failed or disconnected sink is not
-evidence the underlying work failed.
+The optional `output` import takes `{type, data, final, id?, reply?}`. `type` is a MIME type. `data` is a Janet byte
+string or buffer (`Uint8Array` in the SDK). Each call base64-encodes its own bytes on the wire. Wait for its reply
+before sending more. An invocation has at most one open item; other invocations can stream at the same time. Keep
+`type`, `id` and `reply` fixed until `final: true`. The final chunk can be empty.
+
+For example, two `text/plain` chunks containing `Hel` and `lo` make one item, `Hello`. `id` names a published item;
+`reply` names its parent. Both are opaque stable references, unrelated to frame IDs. Omit `id` for temporary output.
+Disconnect before `final` leaves partial output. An acknowledgement confirms the reverse call finished, not that the
+recipient stored the bytes or that a person received them.
 
 For local recovery, `context.scope.authority` names the grant supplied to `activate`. Other scope fields identify the
 delivery context and are opaque to the agent. Neither a scope nor a saved work reference authenticates its holder.
