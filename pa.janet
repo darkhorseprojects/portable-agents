@@ -98,16 +98,22 @@
               (postwalk |(if (= $ :null) nil $) (result :value)))))
           (def root @{:id (message :id) :caller (message :caller) :open true})
           (def response (try
-            (let [method (keyword (message :method)) params (postwalk |(if (= $ :null) nil $) (message :params))
+            (let [method (keyword (message :method))
+                  params (do
+                    (def arguments (message :params))
+                    (assert (indexed? arguments) "expected positional call parameters")
+                    (postwalk |(if (= $ :null) nil $) arguments))
                   value (with-dyns [:pa/root root :pa/handle handle]
                     (case method
                       :invoke (do
-                        (assert (and (indexed? params) (= 3 (length params)) (string? (params 0)) (dictionary? (params 2))) "expected invoke(input, config, imports)")
+                        (assert (and (= 3 (length params)) (string? (params 0)) (dictionary? (params 2))) "expected invoke(input, config, imports)")
+                        (def input (base64/decode (params 0)))
+                        (assert (= (params 0) (base64/encode input)) "invalid input encoding")
                         (def imports (tabseq [[name documentation] :pairs (params 2)] (symbol name)
                           (do (assert (string? documentation) "invalid import documentation")
                             @{:doc documentation :value (fn [arg] (reverse (string name)
                               (if (= name :chunk) (merge arg {:data (base64/encode (arg :data))}) arg)))})))
-                        ((methods :invoke) (base64/decode (params 0)) (params 1) imports))
+                        ((methods :invoke) input (params 1) imports))
                       (apply (assert (methods method) "unknown agent method") params)))]
               {:type "result" :id (message :id) :value (if (nil? value) :null value)})
             ([err fiber] {:type "error" :id (message :id) :error (diagnostic err fiber)})))

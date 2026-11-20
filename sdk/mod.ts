@@ -23,8 +23,13 @@ export type Frame =
   | Readonly<{ type: "result"; id: string; value: unknown }>
   | Readonly<{ type: "error"; id: string; error: Diagnostic }>;
 
-/** Handles a reverse call. For `invoke`, `chunk` parameters have decoded bytes. */
-export type Dispatch = (call: Call, signal: AbortSignal) => Promise<unknown>;
+/** A documented import offered to one invocation. */
+export type ImportBinding = Readonly<{
+  documentation: string;
+  invoke: (params: unknown, signal: AbortSignal) => Promise<unknown>;
+}>;
+
+type Dispatch = (call: Call, signal: AbortSignal) => Promise<unknown>;
 
 /** A remote failure with its original diagnostic intact. */
 export class RemoteError extends Error {
@@ -121,7 +126,7 @@ export class Connection {
   readonly #maximumBytes: number;
   readonly #pending = new Map<
     string,
-    { response: PromiseWithResolvers<unknown>; dispatch: Dispatch; signal: AbortSignal; incoming: Set<string> }
+    { response: PromiseWithResolvers<unknown>; dispatch?: Dispatch; signal: AbortSignal; incoming: Set<string> }
   >();
   readonly #stop = new AbortController();
   #sequence = 0;
@@ -174,6 +179,7 @@ export class Connection {
           try {
             const signal = AbortSignal.any([pending.signal, this.#stop.signal]);
             signal.throwIfAborted();
+            if (!pending.dispatch) throw new Error("Imports are not offered for this call");
             response = { type: "result", id: msg.id, value: await pending.dispatch(msg, signal) };
           } catch (error) {
             response = { type: "error", id: msg.id, error: diagnostic(error) };
@@ -204,15 +210,33 @@ export class Connection {
     });
   }
 
-  /** Calls an application method with opaque JSON parameters. */
-  async call(caller: string, method: string, params: unknown, handle: Dispatch, signal: AbortSignal): Promise<unknown> {
+  /** Calls an application method with positional JSON arguments and no imports. */
+  async call(
+    { caller, method, params, signal }: {
+      caller: string;
+      method: string;
+      params: readonly unknown[];
+      signal: AbortSignal;
+    },
+  ): Promise<unknown> {
+    if (method === "invoke") throw new Error("Use invoke() for byte input and imports");
+    return await this.#call(caller, method, params, signal);
+  }
+
+  async #call(
+    caller: string,
+    method: string,
+    params: readonly unknown[],
+    signal: AbortSignal,
+    dispatch?: Dispatch,
+  ): Promise<unknown> {
     await this.ready;
     signal.throwIfAborted();
     this.#stop.signal.throwIfAborted();
     const id = "h" + ++this.#sequence;
     const bytes = encode({ type: "call", id, caller, method, params }, this.#maximumBytes);
     const response = Promise.withResolvers<unknown>();
-    this.#pending.set(id, { response, dispatch: handle, signal, incoming: new Set() });
+    this.#pending.set(id, { response, dispatch, signal, incoming: new Set() });
     const abort = () => response.reject(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     try {
@@ -223,21 +247,33 @@ export class Connection {
     }
   }
 
-  /** Invokes an agent with byte input, opaque config, and documented imports. */
+  /** Invokes an agent with byte input and opaque config. Only offered imports can be dispatched. */
   async invoke(
-    caller: string,
-    input: Uint8Array,
-    config: unknown,
-    imports: Record<string, string>,
-    dispatch: Dispatch,
-    signal: AbortSignal,
+    { caller, input, config, imports, publish, signal }: {
+      caller: string;
+      input: Uint8Array;
+      config: unknown;
+      imports?: ReadonlyMap<string, ImportBinding>;
+      publish?: (chunk: Chunk, signal: AbortSignal) => Promise<void> | void;
+      signal: AbortSignal;
+    },
   ): Promise<unknown> {
+    const offered = new Map(imports);
+    if (offered.has("chunk")) throw new Error("Use publish to offer chunk");
+    const docs = Object.fromEntries<string>([...offered].map(([name, binding]) => [name, binding.documentation]));
+    if (publish) {
+      docs.chunk =
+        '(chunk {:type "text/plain" :data bytes :final true}) publishes an item. Use final false for intermediate pieces. Optional id and reply name items. Wait for acknowledgement.';
+    }
     let item: string | undefined;
     let writing = false;
-    const offered = Object.hasOwn(imports, "chunk");
-    const result = await this.call(caller, "invoke", [input.toBase64(), config, imports], async (call, active) => {
-      if (call.method !== "chunk") return await dispatch(call, active);
-      if (!offered) throw new Error("Chunk import is not offered");
+    const dispatch: Dispatch = async (call, active) => {
+      if (call.method !== "chunk") {
+        const binding = offered.get(call.method);
+        if (!binding) throw new Error("Import is not offered");
+        return await binding.invoke(call.params, active);
+      }
+      if (!publish) throw new Error("Chunk import is not offered");
       if (!call.params || typeof call.params !== "object" || Array.isArray(call.params)) {
         throw new Error("Invalid chunk");
       }
@@ -255,14 +291,14 @@ export class Connection {
       item = identity;
       writing = true;
       try {
-        const params: Chunk = { type, data: bytes, final, id, reply };
-        const ack = await dispatch({ ...call, params }, active);
+        await publish({ type, data: bytes, final, id, reply }, active);
         if (final) item = undefined;
-        return ack;
+        return null;
       } finally {
         writing = false;
       }
-    }, signal);
+    };
+    const result = await this.#call(caller, "invoke", [input.toBase64(), config, docs], signal, dispatch);
     if (item !== undefined) throw new Error("Partial item");
     return result;
   }

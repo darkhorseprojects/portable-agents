@@ -61,14 +61,15 @@ jobs:
           }).spawn();
           const connection = new Connection(child.stdout, child.stdin, "example", 4096);
           const chunks = [];
-          const result = await connection.invoke(
-            "caller", new TextEncoder().encode("hello"), { ok: true }, { chunk: "Publish bytes" },
-            async ({ method, params: { data, final, id, reply } }) => {
-              assert.equal(method, "chunk");
+          const result = await connection.invoke({
+            caller: "caller",
+            input: new TextEncoder().encode("hello"),
+            config: { ok: true },
+            publish({ data, final, id, reply }) {
               chunks.push([new TextDecoder().decode(data), final, id, reply]);
-              return null;
-            }, AbortSignal.timeout(3000),
-          );
+            },
+            signal: AbortSignal.timeout(3000),
+          });
           assert.deepEqual(result, { ok: true });
           assert.deepEqual(chunks, [["hello", false, "item", "parent"], ["!", true, "item", "parent"]]);
           await connection.close();

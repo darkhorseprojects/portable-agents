@@ -34,18 +34,18 @@ agent-owned JSON-compatible value, and imports is a Janet environment of callabl
 agent returns a JSON-compatible value or raises an error. PA does not inspect configuration or schedule application
 work.
 
-Over the process connection, the host calls method `invoke` with positional `params` containing base64 input, opaque
-config, and a map of imported binding names to documentation strings. The agent's process entry point decodes the input
-and constructs Janet bindings that make ordinary reverse calls. Documentation grants no authority. An agent publishes
-through the `chunk` import when the caller offers it. Other application methods take positional parameters; PA does not
-interpret their arguments or results.
+Over the process connection, the host calls `invoke` with a `params` array of canonical padded standard base64 input,
+opaque config, and a map of imported binding names to documentation strings. The agent's process entry point decodes the
+input and builds callable imports. Documentation grants no authority. An agent publishes through `chunk` when offered.
+Other host-to-agent calls take positional parameter arrays and cannot invoke imports. PA does not interpret their
+application arguments or results.
 
 Root IDs contain no slash. Reverse calls use that root followed by a slash and a connection-local sequence, for example
-`h17/1`. The host retains a handler for each outstanding root (`h17`, `h18`, ...), so invocations and imported calls can
-overlap without a global invocation lock. A root cannot complete with its own reverse calls outstanding. Once it ends,
-its imported functions are invalid. IDs select handlers, not grants: each retained handler still authorizes operations.
-PA requires no policy name, authority token, application catalogue, or discovery handshake. Agents may expose ordinary
-source-owned discovery methods; PA does not interpret their results.
+`h17/1`. The host dispatches only the imports offered for that root. Calls and imports can overlap without a global
+invocation lock. A root cannot complete with its own reverse calls outstanding. Once it ends, its imported functions are
+invalid. IDs select handlers, not grants: the host still authorizes each operation. PA requires no policy name,
+authority token, application catalogue, or discovery handshake. Agents may expose ordinary source-owned discovery
+methods; PA does not interpret their results.
 
 ## Identity and lifetime
 
