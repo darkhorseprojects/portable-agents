@@ -101,15 +101,12 @@
             (let [method (keyword (message :method)) params (postwalk |(if (= $ :null) nil $) (message :params))
                   value (with-dyns [:pa/root root :pa/handle handle]
                     (case method
-                      :describe (merge {:commands []}
-                        (if-let [describe (methods :describe)] (describe params) {})
-                        {:methods (map string (keys methods))})
                       :invoke (do
                         (assert (and (indexed? params) (= 3 (length params)) (string? (params 0)) (dictionary? (params 2))) "expected invoke(input, config, imports)")
                         (def imports (tabseq [[name documentation] :pairs (params 2)] (symbol name)
                           (do (assert (string? documentation) "invalid import documentation")
                             @{:doc documentation :value (fn [arg] (reverse (string name)
-                              (if (= name :output) (merge arg {:data (base64/encode (arg :data))}) arg)))})))
+                              (if (= name :chunk) (merge arg {:data (base64/encode (arg :data))}) arg)))})))
                         ((methods :invoke) (base64/decode (params 0)) (params 1) imports))
                       (apply (assert (methods method) "unknown agent method") params)))]
               {:type "result" :id (message :id) :value (if (nil? value) :null value)})

@@ -1,11 +1,96 @@
 name: CI
-on: [push, pull_request]
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
         with:
           deno-version: v2.9.7
-      - run: deno task check
+      - run: deno fmt --check && deno lint && deno doc --lint sdk/mod.ts
+      - if: github.ref_type != 'tag'
+        run: deno publish --dry-run
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: janet-lang/janet
+          ref: e1963cdfe0148f83601907727e00bd672d798115
+          path: toolchain/janet
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: janet-lang/jpm
+          ref: 029d0c4cfefd2d359ddc5344eae61a1771f4e673
+          path: toolchain/jpm
+      - run: |
+          prefix="$HOME/.local"
+          make -C toolchain/janet -j2 PREFIX="$prefix" install
+          export PATH="$prefix/bin:$PATH"
+          export JANET_PATH="$prefix/lib/janet" JANET_MODPATH="$prefix/lib/janet"
+          export JANET_BINPATH="$prefix/bin" JANET_MANPATH="$prefix/share/man/man1"
+          (cd toolchain/jpm && janet bootstrap.janet)
+          jpm deps
+          jpm install
+          deno run --allow-run=janet - <<'JS'
+          import assert from "node:assert/strict";
+          import { Connection } from "./sdk/mod.ts";
+
+          const child = new Deno.Command("janet", {
+            args: ["-e", `
+              (import pa)
+              (pa/serve {:invoke (fn [bytes config imports]
+                (def send (module/value imports 'chunk))
+                (send {:type "text/plain" :data bytes :final false :id "item" :reply "parent"})
+                (send {:type "text/plain" :data "!" :final true :id "item" :reply "parent"})
+                config)})
+            `],
+            env: { PA_HANDLE: "example", PA_FRAME_BYTES: "4096" },
+            stdin: "piped", stdout: "piped", stderr: "inherit",
+          }).spawn();
+          const connection = new Connection(child.stdout, child.stdin, "example", 4096);
+          const chunks = [];
+          const result = await connection.invoke(
+            "caller", new TextEncoder().encode("hello"), { ok: true }, { chunk: "Publish bytes" },
+            async ({ method, params: { data, final, id, reply } }) => {
+              assert.equal(method, "chunk");
+              chunks.push([new TextDecoder().decode(data), final, id, reply]);
+              return null;
+            }, AbortSignal.timeout(3000),
+          );
+          assert.deepEqual(result, { ok: true });
+          assert.deepEqual(chunks, [["hello", false, "item", "parent"], ["!", true, "item", "parent"]]);
+          await connection.close();
+          assert.equal((await child.status).code, 0);
+          JS
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: check
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          deno-version: v2.9.7
+      - run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$GITHUB_REF_NAME" = "v$(deno eval 'import p from "./deno.json" with {type:"json"}; console.log(p.version)')"
+          deno publish
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

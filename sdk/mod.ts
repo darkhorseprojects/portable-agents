@@ -1,131 +1,80 @@
-import { stripVTControlCharacters } from "node:util";
-import { z } from "zod";
+/** Bounded JSON frames and correlated calls over a pair of byte streams.
+ * @module
+ */
 
-type Setting = { type: "string" | "integer" | "boolean"; description: string; minimum?: number; maximum?: number };
-export type Schema = z.core.JSONSchema.JSONSchema;
-export type AgentDescription = {
-  methods: string[];
-  configSchema?: Schema;
-  commands: { name: string; description: string; options?: (Setting & { name: string })[] }[];
-  intake?: { max_records: number; image_bytes: number };
-};
-export type Output = {
-  type: string;
-  data: Uint8Array;
-  final: boolean;
-  id?: string;
-  reply?: string;
-};
+/** A piece of a published item. A single-piece item has `final: true`. */
+export type Chunk = { type: string; data: Uint8Array; final: boolean; id?: string; reply?: string };
 
-const Field = z.strictObject({
-  type: z.enum(["string", "integer", "boolean"]),
-  description: z.string().min(1),
-  minimum: z.number().optional(),
-  maximum: z.number().optional(),
-});
-export const AgentDescription: z.ZodType<AgentDescription> = z.strictObject({
-  methods: z.array(z.string()),
-  configSchema: z.record(z.string(), z.json()).optional(),
-  commands: z.array(
-    z.strictObject({
-      name: z.string(),
-      description: z.string(),
-      options: z.array(Field.extend({ name: z.string() })).optional(),
-    }),
-  ),
-  intake: z.strictObject({ max_records: z.number().int().positive(), image_bytes: z.number().int().nonnegative() })
-    .optional(),
-});
-export const Prepared: z.ZodType<
-  { config: unknown; input: unknown; history: boolean }
-> = z.strictObject({
-  config: z.json(),
-  input: z.json(),
-  history: z.boolean(),
-});
-export const Position: z.ZodType<{ config: unknown; through: string | null }> = z.strictObject({
-  config: z.json(),
-  through: z.string().nullable(),
-});
-const chunk = z.strictObject({
-  type: z.string().regex(/^[\w!#$%&'*+.^`|~-]+\/[\w!#$%&'*+.^`|~-]+(?:\s*;[^\r\n]+)?$/),
-  data: z.base64().transform((s) => Uint8Array.fromBase64(s)),
-  final: z.boolean(),
-  id: z.string().optional(),
-  reply: z.string().optional(),
-});
+/** An error received across the connection. */
+export type Diagnostic = Readonly<{
+  code: string;
+  message: string;
+  detail?: string;
+  context?: Readonly<Record<string, unknown>>;
+}>;
 
+/** A call with a transport ID and a caller asserted by its sender. */
+export type Call = Readonly<{ type: "call"; id: string; caller: string; method: string; params: unknown }>;
+
+/** One protocol envelope, before byte encoding or after byte decoding. */
 export type Frame =
-  | {
-    readonly type: "call";
-    readonly id: string;
-    readonly caller: string;
-    readonly method: string;
-    readonly params: unknown;
-  }
-  | { readonly type: "ready"; readonly handle: string }
-  | { readonly type: "result"; readonly id: string; readonly value: unknown }
-  | {
-    readonly type: "error";
-    readonly id: string;
-    readonly error: {
-      readonly code: string;
-      readonly message: string;
-      readonly detail?: string;
-      readonly context?: Readonly<Record<string, unknown>>;
-    };
-  };
+  | Call
+  | Readonly<{ type: "ready"; handle: string }>
+  | Readonly<{ type: "result"; id: string; value: unknown }>
+  | Readonly<{ type: "error"; id: string; error: Diagnostic }>;
 
-export type Call = Extract<Frame, { type: "call" }>;
-export type Diagnostic = Extract<Frame, { type: "error" }>["error"];
+/** Handles a reverse call. For `invoke`, `chunk` parameters have decoded bytes. */
 export type Dispatch = (call: Call, signal: AbortSignal) => Promise<unknown>;
 
+/** A remote failure with its original diagnostic intact. */
 export class RemoteError extends Error {
-  constructor(readonly diagnostic: Diagnostic) {
+  /** The original diagnostic from the peer. */
+  readonly diagnostic: Diagnostic;
+
+  /** Wraps a received diagnostic without changing it. */
+  constructor(diagnostic: Diagnostic) {
     super(diagnostic.message);
     this.name = diagnostic.code;
+    this.diagnostic = diagnostic;
   }
 }
 
+/** Preserves remote diagnostics and describes local failures. */
 export function diagnostic(error: unknown): Diagnostic {
   if (error instanceof RemoteError) return error.diagnostic;
-  return {
-    code: error instanceof Error ? error.name : "ExecutionFailed",
-    message: error instanceof Error ? error.message : String(error),
-    ...(error instanceof Error && error.stack ? { detail: error.stack } : {}),
-  };
+  return error instanceof Error
+    ? { code: error.name, message: error.message, ...(error.stack ? { detail: error.stack } : {}) }
+    : { code: "ExecutionFailed", message: String(error) };
 }
 
-function message(value: unknown): Frame {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid protocol message");
+const fields = {
+  ready: ["handle"],
+  call: ["id", "caller", "method", "params"],
+  result: ["id", "value"],
+  error: ["id", "error"],
+};
+
+function frame(value: unknown): Frame {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid protocol frame");
   const raw = value as Record<string, unknown>;
-  const fields: Record<string, readonly string[]> = {
-    call: ["id", "caller", "method", "params"],
-    ready: ["handle"],
-    result: ["id", "value"],
-    error: ["id", "error"],
-  };
-  const required = typeof raw.type === "string" && Object.hasOwn(fields, raw.type) && fields[raw.type];
-  if (
-    !required || required.some((key) => !Object.hasOwn(raw, key)) ||
-    Object.keys(raw).some((key) => !["type", ...required].includes(key))
-  ) throw new Error("Invalid protocol envelope");
-  for (const key of ["id", "caller", "method", "handle"]) {
+  const keys = typeof raw.type === "string" && Object.hasOwn(fields, raw.type) &&
+    fields[raw.type as keyof typeof fields];
+  if (!keys || Object.keys(raw).length !== keys.length + 1 || keys.some((key) => !Object.hasOwn(raw, key))) {
+    throw new Error("Invalid protocol envelope");
+  }
+  for (const key of keys) {
+    if (key === "params" || key === "value" || key === "error") continue;
     const text = raw[key];
-    if (required.includes(key) && (typeof text !== "string" || !text || !text.isWellFormed())) {
-      throw new Error(`Invalid ${key}`);
-    }
+    if (typeof text !== "string" || !text || !text.isWellFormed()) throw new Error(`Invalid ${key}`);
   }
   if (raw.type === "error") {
-    const error = raw.error as Record<string, unknown> | null;
+    if (!raw.error || typeof raw.error !== "object" || Array.isArray(raw.error)) throw new Error("Invalid diagnostic");
+    const { code, message, detail, context, ...rest } = raw.error as Record<string, unknown>;
     if (
-      !error || typeof error !== "object" || Array.isArray(error) ||
-      typeof error.code !== "string" || !error.code.isWellFormed() ||
-      typeof error.message !== "string" || !error.message.isWellFormed() ||
-      error.detail !== undefined && (typeof error.detail !== "string" || !error.detail.isWellFormed()) ||
-      error.context !== undefined &&
-        (!error.context || typeof error.context !== "object" || Array.isArray(error.context)) ||
-      Object.keys(error).some((key) => !["code", "message", "detail", "context"].includes(key))
+      typeof code !== "string" || !code.isWellFormed() || typeof message !== "string" || !message.isWellFormed() ||
+      detail !== undefined && (typeof detail !== "string" || !detail.isWellFormed()) ||
+      context !== undefined && (!context || typeof context !== "object" || Array.isArray(context)) ||
+      Object.keys(rest).length
     ) throw new Error("Invalid diagnostic");
   }
   return value as Frame;
@@ -133,37 +82,32 @@ function message(value: unknown): Frame {
 
 class FrameTooLarge extends Error {}
 
+/** Encodes one frame. The limit includes the newline. */
 export function encode(value: Frame, maximumBytes: number): Uint8Array {
-  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 0x7fffffff) {
-    throw new Error("Invalid frame limit");
-  }
+  if (!(maximumBytes > 0 && maximumBytes === (maximumBytes | 0))) throw new Error("Invalid frame limit");
   const json = JSON.stringify(value);
-  message(JSON.parse(json));
+  frame(JSON.parse(json));
   const bytes = new TextEncoder().encode(json + "\n");
   if (bytes.length > maximumBytes) throw new FrameTooLarge("Frame exceeds byte limit");
   return bytes;
 }
 
-export async function* decode(
-  readable: ReadableStream<Uint8Array>,
-  maximumBytes: number,
-): AsyncGenerator<Frame> {
-  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > 0x7fffffff) {
-    throw new Error("Invalid frame limit");
-  }
+/** Reads complete frames without waiting for EOF. A partial frame is an error. */
+export async function* decode(readable: ReadableStream<Uint8Array>, maximumBytes: number): AsyncGenerator<Frame> {
+  if (!(maximumBytes > 0 && maximumBytes === (maximumBytes | 0))) throw new Error("Invalid frame limit");
   const buffer = new ArrayBuffer(0, { maxByteLength: maximumBytes });
   const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-  for await (const chunk of readable) {
-    for (let offset = 0; offset < chunk.length;) {
-      const newline = chunk.indexOf(10, offset);
-      const part = chunk.subarray(offset, newline < 0 ? chunk.length : newline);
+  for await (const bytes of readable) {
+    for (let offset = 0; offset < bytes.length;) {
+      const newline = bytes.indexOf(10, offset);
+      const part = bytes.subarray(offset, newline < 0 ? bytes.length : newline);
       const position = buffer.byteLength;
-      if (position + part.length >= maximumBytes) throw new Error("Frame exceeds byte limit");
+      if (position + part.length >= maximumBytes) throw new FrameTooLarge("Frame exceeds byte limit");
       buffer.resize(position + part.length);
       new Uint8Array(buffer).set(part, position);
-      offset = newline < 0 ? chunk.length : newline + 1;
       if (newline < 0) break;
-      const value = message(JSON.parse(utf8.decode(buffer)));
+      offset = newline + 1;
+      const value = frame(JSON.parse(utf8.decode(buffer)));
       buffer.resize(0);
       yield value;
     }
@@ -171,128 +115,116 @@ export async function* decode(
   if (buffer.byteLength) throw new Error("Partial frame");
 }
 
+/** The calling side of a connection. The owner supplies the streams and expected peer handle. */
 export class Connection {
   readonly #writer: WritableStreamDefaultWriter<Uint8Array>;
+  readonly #maximumBytes: number;
   readonly #pending = new Map<
     string,
     { response: PromiseWithResolvers<unknown>; dispatch: Dispatch; signal: AbortSignal; incoming: Set<string> }
   >();
   readonly #stop = new AbortController();
-  readonly #ready = Promise.withResolvers<void>();
-  readonly closed: Promise<void>;
-  readonly ready: Promise<void> = this.#ready.promise;
   #sequence = 0;
 
+  /** Resolves when the expected peer sends readiness; rejects if the connection ends first. */
+  readonly ready: Promise<void>;
+  /** Settles after the read loop ends and outstanding calls have been failed. */
+  readonly closed: Promise<void>;
+
+  /** Starts reading the supplied streams and checks the peer's readiness. */
   constructor(
     readable: ReadableStream<Uint8Array>,
     writable: WritableStream<Uint8Array>,
-    readonly peer: string,
-    readonly maximumBytes: number,
+    peer: string,
+    maximumBytes: number,
   ) {
+    const ready = Promise.withResolvers<void>();
+    this.ready = ready.promise;
+    void this.ready.catch(() => {});
+    this.#maximumBytes = maximumBytes;
     const writer = writable.getWriter();
     this.#writer = writer;
-    void this.ready.catch(() => {});
     this.closed = (async () => {
       let loaded = false;
-      try {
-        for await (
-          const message of decode(
-            readable.pipeThrough(new TransformStream(), { signal: this.#stop.signal }),
-            maximumBytes,
-          )
-        ) {
-          if (message.type === "ready") {
-            if (loaded || message.handle !== peer) throw new Error("Invalid peer readiness");
-            loaded = true;
-            this.#ready.resolve();
-          } else {
-            if (!loaded) throw new Error("Missing peer readiness");
-            if (message.type === "call") {
-              if (message.caller !== peer) throw new Error("Invalid incoming call");
-              const invocation = this.#pending.get(message.id.split("/", 1)[0]);
-              if (!invocation) throw new Error("Unknown invocation");
-              if (invocation.incoming.has(message.id)) throw new Error("Duplicate incoming call");
-              invocation.incoming.add(message.id);
-              void (async () => {
-                let response: Frame;
-                try {
-                  invocation.signal.throwIfAborted();
-                  response = {
-                    type: "result",
-                    id: message.id,
-                    value: await invocation.dispatch(message, AbortSignal.any([invocation.signal, this.#stop.signal])),
-                  };
-                } catch (error) {
-                  response = { type: "error", id: message.id, error: diagnostic(error) };
-                }
-                let bytes: Uint8Array;
-                try {
-                  bytes = encode(response, maximumBytes);
-                } catch (error) {
-                  if (!(error instanceof FrameTooLarge)) throw error;
-                  bytes = encode({
-                    type: "error",
-                    id: message.id,
-                    error: {
-                      code: "TransportLimit",
-                      message: "Import response exceeds the frame limit; effects may have happened",
-                    },
-                  }, maximumBytes);
-                }
-                invocation.incoming.delete(message.id);
-                await writer.write(bytes);
-              })().catch((error) => this.#stop.abort(error));
-            } else {
-              const invocation = this.#pending.get(message.id);
-              if (!invocation || invocation.incoming.size) {
-                throw new Error("Unexpected response or outstanding imported call");
-              }
-              this.#pending.delete(message.id);
-              if (message.type === "result") invocation.response.resolve(message.value);
-              else invocation.response.reject(new RemoteError(message.error));
-            }
-          }
+      const stream = readable.pipeThrough(new TransformStream(), { signal: this.#stop.signal });
+      for await (const msg of decode(stream, maximumBytes)) {
+        if (msg.type === "ready") {
+          if (loaded || msg.handle !== peer) throw new Error("Invalid peer readiness");
+          loaded = true;
+          ready.resolve();
+          continue;
         }
-      } catch (error) {
-        this.#stop.abort(error);
-      } finally {
-        this.#stop.abort(new Error("Connection closed"));
-        this.#ready.reject(this.#stop.signal.reason);
-        for (const { response } of this.#pending.values()) response.reject(this.#stop.signal.reason);
-        this.#pending.clear();
+        if (!loaded) throw new Error("Missing peer readiness");
+        if (msg.type !== "call") {
+          const pending = this.#pending.get(msg.id);
+          if (!pending || pending.incoming.size) throw new Error("Unexpected response or outstanding reverse call");
+          this.#pending.delete(msg.id);
+          if (msg.type === "result") pending.response.resolve(msg.value);
+          else pending.response.reject(new RemoteError(msg.error));
+          continue;
+        }
+        const slash = msg.id.indexOf("/");
+        const pending = this.#pending.get(msg.id.slice(0, slash));
+        if (slash < 1 || msg.caller !== peer || !pending || pending.incoming.has(msg.id)) {
+          throw new Error("Invalid reverse call");
+        }
+        pending.incoming.add(msg.id);
+        void (async () => {
+          let response: Frame;
+          try {
+            const signal = AbortSignal.any([pending.signal, this.#stop.signal]);
+            signal.throwIfAborted();
+            response = { type: "result", id: msg.id, value: await pending.dispatch(msg, signal) };
+          } catch (error) {
+            response = { type: "error", id: msg.id, error: diagnostic(error) };
+          }
+          let bytes: Uint8Array;
+          try {
+            bytes = encode(response, maximumBytes);
+          } catch (error) {
+            if (!(error instanceof FrameTooLarge)) throw error;
+            bytes = encode({
+              type: "error",
+              id: msg.id,
+              error: {
+                code: "TransportLimit",
+                message: "Import response exceeds the frame limit; effects may have happened",
+              },
+            }, maximumBytes);
+          }
+          pending.incoming.delete(msg.id);
+          await writer.write(bytes);
+        })().catch((error) => this.#stop.abort(error));
       }
-    })();
+    })().catch((error) => this.#stop.abort(error)).finally(() => {
+      this.#stop.abort(new Error("Connection closed"));
+      ready.reject(this.#stop.signal.reason);
+      for (const { response } of this.#pending.values()) response.reject(this.#stop.signal.reason);
+      this.#pending.clear();
+    });
   }
 
-  async call(
-    caller: string,
-    method: string,
-    params: unknown,
-    dispatch: Dispatch,
-    signal: AbortSignal,
-  ): Promise<unknown> {
+  /** Calls an application method with opaque JSON parameters. */
+  async call(caller: string, method: string, params: unknown, handle: Dispatch, signal: AbortSignal): Promise<unknown> {
     await this.ready;
     signal.throwIfAborted();
     this.#stop.signal.throwIfAborted();
     const id = "h" + ++this.#sequence;
+    const bytes = encode({ type: "call", id, caller, method, params }, this.#maximumBytes);
     const response = Promise.withResolvers<unknown>();
-    this.#pending.set(id, { response, dispatch, signal, incoming: new Set() });
+    this.#pending.set(id, { response, dispatch: handle, signal, incoming: new Set() });
     const abort = () => response.reject(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     try {
-      try {
-        await this.#writer.write(encode({ type: "call", id, caller, method, params }, this.maximumBytes));
-      } catch (error) {
-        this.#pending.delete(id);
-        response.reject(error);
-      }
+      void this.#writer.write(bytes).catch((error) => this.#stop.abort(error));
       return await response.promise;
     } finally {
       signal.removeEventListener("abort", abort);
     }
   }
 
-  invoke(
+  /** Invokes an agent with byte input, opaque config, and documented imports. */
+  async invoke(
     caller: string,
     input: Uint8Array,
     config: unknown,
@@ -300,93 +232,43 @@ export class Connection {
     dispatch: Dispatch,
     signal: AbortSignal,
   ): Promise<unknown> {
-    let item: Pick<Output, "type" | "id" | "reply"> | undefined;
+    let item: string | undefined;
     let writing = false;
-    return this.call(caller, "invoke", [input.toBase64(), config, imports], async (call, active) => {
-      if (call.method !== "output") return await dispatch(call, active);
-      const output = chunk.parse(call.params);
-      if (writing || item && (item.type !== output.type || item.id !== output.id || item.reply !== output.reply)) {
-        throw new Error("Overlapping output items");
+    const offered = Object.hasOwn(imports, "chunk");
+    const result = await this.call(caller, "invoke", [input.toBase64(), config, imports], async (call, active) => {
+      if (call.method !== "chunk") return await dispatch(call, active);
+      if (!offered) throw new Error("Chunk import is not offered");
+      if (!call.params || typeof call.params !== "object" || Array.isArray(call.params)) {
+        throw new Error("Invalid chunk");
       }
-      item = { type: output.type, id: output.id, reply: output.reply };
+      const { type, data, final, id, reply, ...rest } = call.params as Record<string, unknown>;
+      if (
+        typeof type !== "string" || !/^[\w!#$%&'*+.^`|~-]+\/[\w!#$%&'*+.^`|~-]+(?:[ \t]*;[^\r\n]+)?$/.test(type) ||
+        typeof data !== "string" || typeof final !== "boolean" ||
+        id !== undefined && typeof id !== "string" || reply !== undefined && typeof reply !== "string" ||
+        Object.keys(rest).length
+      ) throw new Error("Invalid chunk");
+      const bytes = Uint8Array.fromBase64(data, { lastChunkHandling: "strict" });
+      if (bytes.toBase64() !== data) throw new Error("Invalid chunk encoding");
+      const identity = JSON.stringify([type, id, reply]);
+      if (writing || item !== undefined && item !== identity) throw new Error("Overlapping items");
+      item = identity;
       writing = true;
       try {
-        const ack = await dispatch({ ...call, params: output }, active);
-        if (output.final) item = undefined;
+        const params: Chunk = { type, data: bytes, final, id, reply };
+        const ack = await dispatch({ ...call, params }, active);
+        if (final) item = undefined;
         return ack;
       } finally {
         writing = false;
       }
-    }, signal).then((value) => {
-      if (item) throw new Error("Partial output item");
-      return value;
-    });
+    }, signal);
+    if (item !== undefined) throw new Error("Partial item");
+    return result;
   }
 
-  async close() {
+  /** Closes the write side; the process owner controls shutdown deadlines. */
+  async close(): Promise<void> {
     if (!this.#stop.signal.aborted) await this.#writer.close();
   }
-}
-
-export type LiveAgent = Pick<Connection, "ready" | "call" | "invoke" | "closed"> & {
-  close(milliseconds: number): Promise<void>;
-};
-
-export function openAgent(
-  handle: string,
-  runtime: {
-    module: string;
-    directory: string;
-    environment?: Record<string, string>;
-    transport: { "frame-bytes": number; "admission-seconds": number };
-  },
-): LiveAgent {
-  const child = new Deno.Command("janet", {
-    args: ["-t", runtime.module],
-    cwd: runtime.directory,
-    env: {
-      ...runtime.environment,
-      PA_FRAME_BYTES: String(runtime.transport["frame-bytes"]),
-      PA_HANDLE: handle,
-    },
-    stdin: "piped",
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
-  const connection = new Connection(child.stdout, child.stdin, handle, runtime.transport["frame-bytes"]);
-  const kill = () => {
-    try {
-      child.kill("SIGKILL");
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) console.error(error);
-    }
-  };
-  const timeout = setTimeout(kill, runtime.transport["admission-seconds"] * 1000);
-  void connection.ready.finally(() => clearTimeout(timeout)).catch(() => {});
-  const logs = (async () => {
-    for await (const text of child.stderr.pipeThrough(new TextDecoderStream())) {
-      Deno.stderr.writeSync(new TextEncoder().encode(stripVTControlCharacters(text)));
-    }
-  })();
-  const closed = (async () => {
-    await connection.closed;
-    kill();
-    await child.status;
-    await logs;
-  })();
-  return {
-    ready: connection.ready,
-    closed,
-    call: connection.call.bind(connection),
-    invoke: connection.invoke.bind(connection),
-    async close(milliseconds: number) {
-      const timer = setTimeout(kill, milliseconds);
-      try {
-        await connection.close();
-        await closed;
-      } finally {
-        clearTimeout(timer);
-      }
-    },
-  };
 }
