@@ -1,8 +1,7 @@
 # Protocol
 
-PA is a fixed, unversioned, bidirectional connection. Janet agents read stdin until EOF, write protocol frames to
-stdout, and diagnostics to stderr. PA supplies codecs and correlated connections, not an agent runner or application
-framework.
+Both ends of a Portable Agents connection can make calls. Janet agents read frames from stdin, write frames to stdout,
+and write diagnostics to stderr. The wire format has no version field.
 
 ## Frames
 
