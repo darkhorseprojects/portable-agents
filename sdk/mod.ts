@@ -29,6 +29,8 @@ export type ImportBinding = Readonly<{
   invoke: (params: unknown, signal: AbortSignal) => Promise<unknown>;
 }>;
 
+/** Positional application call and its cancellation signal. */
+export type Root = Pick<Call, "caller" | "method"> & { params: readonly unknown[]; signal: AbortSignal };
 type Dispatch = (call: Call, signal: AbortSignal) => Promise<unknown>;
 
 /** A remote failure with its original diagnostic intact. */
@@ -85,15 +87,17 @@ function frame(value: unknown): Frame {
   return value as Frame;
 }
 
-class FrameTooLarge extends Error {}
+function serialize(value: Frame): Uint8Array {
+  const json = JSON.stringify(value);
+  frame(JSON.parse(json));
+  return new TextEncoder().encode(json + "\n");
+}
 
 /** Encodes one frame. The limit includes the newline. */
 export function encode(value: Frame, maximumBytes: number): Uint8Array {
   if (!(maximumBytes > 0 && maximumBytes === (maximumBytes | 0))) throw new Error("Invalid frame limit");
-  const json = JSON.stringify(value);
-  frame(JSON.parse(json));
-  const bytes = new TextEncoder().encode(json + "\n");
-  if (bytes.length > maximumBytes) throw new FrameTooLarge("Frame exceeds byte limit");
+  const bytes = serialize(value);
+  if (bytes.length > maximumBytes) throw new Error("Frame exceeds byte limit");
   return bytes;
 }
 
@@ -107,7 +111,7 @@ export async function* decode(readable: ReadableStream<Uint8Array>, maximumBytes
       const newline = bytes.indexOf(10, offset);
       const part = bytes.subarray(offset, newline < 0 ? bytes.length : newline);
       const position = buffer.byteLength;
-      if (position + part.length >= maximumBytes) throw new FrameTooLarge("Frame exceeds byte limit");
+      if (position + part.length >= maximumBytes) throw new Error("Frame exceeds byte limit");
       buffer.resize(position + part.length);
       new Uint8Array(buffer).set(part, position);
       if (newline < 0) break;
@@ -144,11 +148,9 @@ export class Connection {
     maximumBytes: number,
   ) {
     const ready = Promise.withResolvers<void>();
-    this.ready = ready.promise;
-    void this.ready.catch(() => {});
+    void (this.ready = ready.promise).catch(() => {});
     this.#maximumBytes = maximumBytes;
-    const writer = writable.getWriter();
-    this.#writer = writer;
+    const writer = this.#writer = writable.getWriter();
     this.closed = (async () => {
       let loaded = false;
       const stream = readable.pipeThrough(new TransformStream(), { signal: this.#stop.signal });
@@ -184,19 +186,13 @@ export class Connection {
           } catch (error) {
             response = { type: "error", id: msg.id, error: diagnostic(error) };
           }
-          let bytes: Uint8Array;
-          try {
-            bytes = encode(response, maximumBytes);
-          } catch (error) {
-            if (!(error instanceof FrameTooLarge)) throw error;
-            bytes = encode({
-              type: "error",
-              id: msg.id,
-              error: {
-                code: "TransportLimit",
-                message: "Import response exceeds the frame limit; effects may have happened",
-              },
-            }, maximumBytes);
+          let bytes = serialize(response);
+          if (bytes.length > maximumBytes) {
+            const error = {
+              code: "TransportLimit",
+              message: "Import response exceeds the frame limit; effects may have happened",
+            };
+            bytes = encode({ type: "error", id: msg.id, error }, maximumBytes);
           }
           pending.incoming.delete(msg.id);
           await writer.write(bytes);
@@ -211,25 +207,12 @@ export class Connection {
   }
 
   /** Calls an application method with positional JSON arguments and no imports. */
-  async call(
-    { caller, method, params, signal }: {
-      caller: string;
-      method: string;
-      params: readonly unknown[];
-      signal: AbortSignal;
-    },
-  ): Promise<unknown> {
-    if (method === "invoke") throw new Error("Use invoke() for byte input and imports");
-    return await this.#call(caller, method, params, signal);
+  async call(root: Root): Promise<unknown> {
+    if (root.method === "invoke") throw new Error("Use invoke() for byte input and imports");
+    return await this.#call(root);
   }
 
-  async #call(
-    caller: string,
-    method: string,
-    params: readonly unknown[],
-    signal: AbortSignal,
-    dispatch?: Dispatch,
-  ): Promise<unknown> {
+  async #call({ caller, method, params, signal }: Root, dispatch?: Dispatch): Promise<unknown> {
     await this.ready;
     signal.throwIfAborted();
     this.#stop.signal.throwIfAborted();
@@ -298,13 +281,14 @@ export class Connection {
         writing = false;
       }
     };
-    const result = await this.#call(caller, "invoke", [input.toBase64(), config, docs], signal, dispatch);
+    const params = [input.toBase64(), config, docs];
+    const result = await this.#call({ caller, method: "invoke", params, signal }, dispatch);
     if (item !== undefined) throw new Error("Partial item");
     return result;
   }
 
   /** Closes the write side; the process owner controls shutdown deadlines. */
-  async close(): Promise<void> {
-    if (!this.#stop.signal.aborted) await this.#writer.close();
+  close(): Promise<void> {
+    return this.#stop.signal.aborted ? Promise.resolve() : this.#writer.close();
   }
 }
